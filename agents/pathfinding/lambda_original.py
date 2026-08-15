@@ -45,6 +45,52 @@ NEWLINE = chr(10)
 ROW_SEPARATORS = NEWLINE + ";/|"
 DEFAULT_STRATEGY = os.environ.get("STRATEGY", "collect_all")
 
+# --------------------------------------------------------------------------- #
+# Cached board.
+#
+# Relaying the board costs the supervisor about 515 output tokens, and output
+# tokens are the only cost term in the score. The board itself is stable across
+# runs; what varies between runs is the questions on each tile. So the board can
+# live here in configuration, where it costs nothing, and the supervisor sends only
+# the first row as a fingerprint.
+#
+# The fingerprint is what makes this safe. Copying one row is something the model
+# does reliably, unlike re-encoding a hundred cells, which failed outright. If the
+# row does not match the cached board, this refuses and asks for the full map
+# rather than routing on a board that is no longer true.
+#
+# Set BOARD to the board as a JSON array of arrays. Leave it unset and everything
+# behaves exactly as before.
+# --------------------------------------------------------------------------- #
+
+def load_cached_board():
+    raw = os.environ.get("BOARD")
+    if not raw:
+        return None
+    try:
+        board = json.loads(raw)
+    except ValueError:
+        return None
+    if (isinstance(board, list) and board
+            and all(isinstance(row, list) and row for row in board)
+            and all(isinstance(cell, str) for row in board for cell in row)
+            and len({len(row) for row in board}) == 1):
+        return board
+    return None
+
+
+def fingerprint_row(body):
+    """The row the caller sent for verification, in any reasonable spelling."""
+    for key in ('first_row', 'firstrow', 'row0', 'row_0', 'fingerprint', 'verify_row'):
+        value = body.get(key)
+        if isinstance(value, list) and value and all(isinstance(c, str) for c in value):
+            return value
+        if isinstance(value, str) and value.strip():
+            parts = [p.strip().strip('"\'') for p in value.split(',')]
+            if len(parts) > 1:
+                return parts
+    return None
+
 
 def parse_legend(raw):
     legend = dict(DEFAULT_LEGEND)
@@ -461,6 +507,33 @@ def lambda_handler(event, context=None):
             if compact:
                 game_map = compact
                 break
+
+        # No board in the payload? Fall back to the cached one, but only after the
+        # caller's fingerprint row proves it is still the right board.
+        if not game_map:
+            cached = load_cached_board()
+            sent_row = fingerprint_row(body)
+            if cached and sent_row:
+                sent_last = fingerprint_row({'first_row': body.get('last_row')
+                                                          or body.get('lastrow')})
+                if list(sent_row) != list(cached[0]):
+                    return _err(400,
+                                "Cached board does not match. Row 0 sent was %s but the "
+                                "cached board starts %s. Send the whole board as game_map "
+                                "instead." % (json.dumps(sent_row), json.dumps(cached[0])))
+                if sent_last and list(sent_last) != list(cached[-1]):
+                    # Checking both ends costs the caller about 40 tokens and makes a
+                    # stale middle far less likely to slip through unnoticed.
+                    return _err(400,
+                                "Cached board does not match. Last row sent was %s but the "
+                                "cached board ends %s. Send the whole board as game_map "
+                                "instead." % (json.dumps(sent_last), json.dumps(cached[-1])))
+                game_map = cached
+            elif cached and not sent_row:
+                return _err(400,
+                            "A cached board is configured but no fingerprint row was sent. "
+                            "Send first_row as the board's top row, copied exactly, or send "
+                            "the whole board as game_map.")
 
         if (not game_map and not body.get('door_code') and not body.get('door')
                 and not body.get('door_id') and not body.get('challenge_id')

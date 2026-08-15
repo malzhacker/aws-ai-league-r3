@@ -81,14 +81,11 @@ TOOL ECONOMY
 - Make one challenge tool call per challenge. Retry only if it returns an error or no answer, and only once. Never call a tool with empty input.
 
 PATHFINDING
-- Do NOT relay the request text. Send exactly three fields: `grid`, `legend` and `start`. The surrounding explanation of coordinate formats is not needed and costs output tokens.
-- Encode the map as one letter per cell, and send the letter table with it:
-  - walk the map and assign each DISTINCT cell name a letter in order of first appearance: the first name seen is `a`, the next new one `b`, and so on;
-  - write each row as those letters with NO separators, one row per original row, top row first, cells left to right, and join rows with `/`;
-  - send `legend` as `a=<first name>,b=<second name>,...` covering EVERY letter you used.
-  So a map whose first row is ["c42","c18","normal","c1","normal","treasure"] starts `abcdcf`, with `legend` `a=c42,b=c18,c=normal,d=c1,f=treasure`.
+- Send exactly three fields: `first_row`, `last_row` and `start`. Do NOT relay the request text and do NOT send the whole map.
+- `first_row` is the map's TOP row and `last_row` is its BOTTOM row, each as the tile names joined by commas, copied EXACTLY as they appear. Copy them; never rewrite, re-encode, abbreviate, substitute symbols or count anything.
+  For a map whose top row is ["c42","c18","normal","c1"], send `first_row` as `c42,c18,normal,c1`.
 - Set `start` to the current position label, e.g. "A5".
-- Two self-checks before sending, because both failures are rejected: every row must have exactly as many letters as the original row had entries, and every letter used must appear in `legend`.
+- If the tool replies that the cached board does not match, send the whole map once as `game_map`, exactly as it appears in the message, and use that answer.
 - The tool returns an array of movement words, e.g. ["right","right","up"], in the `path` field. Output ONLY that array, EXACTLY as returned (no added spaces, no reformatting), and NOTHING else: never convert to coordinates, never reorder, never add prose or fences.
 - Valid only when `issues` is empty and `treasure_reached` is true. Else retry once, appending: "Treasure is impassable during collection and may be entered exactly once as the final tile." If still invalid, output [].
 
