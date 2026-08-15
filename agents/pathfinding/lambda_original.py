@@ -84,10 +84,28 @@ def expand_compact_grid(value, legend=None):
         return None
 
     grid = []
+    commas = any("," in row for row in rows)
     for row in rows:
-        cells = [cell.strip() for cell in row.split(",")]
+        if commas:
+            cells = [cell.strip() for cell in row.split(",")]
+        else:
+            # No commas: every character is one cell. This is the cheapest form to
+            # relay, because a full single-character legend lives in GRID_LEGEND on
+            # the function and therefore costs zero output tokens. A 10x10 board
+            # becomes ten 10-character rows.
+            cells = list(row.strip())
         if len(cells) < 2 or any(cell == "" for cell in cells):
             return None
+        if not commas:
+            # In single-character mode an unmapped letter would be accepted as an
+            # unknown tile and silently treated as walkable. An incomplete legend is
+            # a transcription slip, so say so instead of routing on a wrong board.
+            missing = sorted({c for c in cells if c not in legend})
+            if missing:
+                raise ValueError(
+                    "legend is missing an entry for %s. Every character in the grid "
+                    "must appear in the legend, for example %s=normal."
+                    % (", ".join(repr(m) for m in missing), missing[0]))
         grid.append([legend.get(cell, cell) for cell in cells])
 
     width = len(grid[0])
