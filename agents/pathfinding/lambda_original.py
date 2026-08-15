@@ -54,6 +54,30 @@ DOOR_HINTS = {
 NEWLINE = chr(10)
 DEFAULT_STRATEGY = os.environ.get("STRATEGY", "collect_all")
 
+# The board, in code rather than in configuration.
+#
+# The BOARD environment variable is the cleaner home for this, but a workshop role
+# is denied lambda:UpdateFunctionConfiguration, so environment variables cannot be
+# set at all. Code updates use a different permission, so the value lives here.
+#
+# The environment variable still wins when it is available, so nothing has to change
+# if this ever moves to an account that allows it.
+#
+# Replace this if the board changes. The fingerprint check below means a stale value
+# fails loudly with the row it disagreed on, rather than routing on a wrong board.
+BOARD_IN_CODE = [
+    ["c42", "c18", "normal", "normal", "c1", "normal", "c7", "normal", "normal", "treasure"],
+    ["c4", "normal", "normal", "c2", "wall", "normal", "normal", "normal", "normal", "normal"],
+    ["normal", "normal", "normal", "normal", "wall", "c43", "normal", "normal", "normal", "normal"],
+    ["wall", "wall", "wall", "c5", "wall", "wall", "c8", "wall", "wall", "c33"],
+    ["normal", "normal", "normal", "normal", "c8", "normal", "normal", "normal", "normal", "normal"],
+    ["wall", "wall", "wall", "c8", "wall", "wall", "wall", "wall", "wall", "c32"],
+    ["c8", "normal", "normal", "normal", "wall", "c7", "c7", "c7", "c7", "c1"],
+    ["c2", "normal", "normal", "c4", "wall", "c17", "c7", "c7", "c7", "c7"],
+    ["normal", "normal", "normal", "normal", "wall", "wall", "wall", "wall", "wall", "normal"],
+    ["c8", "normal", "normal", "c18", "c5", "c7", "c7", "c7", "c7", "c7"],
+]
+
 
 def board_cache_status():
     """Return (board, explanation). The explanation is surfaced in errors.
@@ -64,7 +88,15 @@ def board_cache_status():
     """
     raw = os.environ.get("BOARD")
     if not raw or not raw.strip():
-        return None, "BOARD is not set"
+        # No variable, so use the value compiled into this file.
+        board = BOARD_IN_CODE
+        if not (isinstance(board, list) and board
+                and all(isinstance(row, list) and row for row in board)
+                and all(isinstance(cell, str) for row in board for cell in row)
+                and len({len(row) for row in board}) == 1):
+            return None, "BOARD is not set and BOARD_IN_CODE is empty or malformed"
+        return board, ("BOARD_IN_CODE loaded: %d rows of %d"
+                       % (len(board), len(board[0])))
     try:
         board = json.loads(raw)
     except ValueError as exc:
