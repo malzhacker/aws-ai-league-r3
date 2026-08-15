@@ -84,19 +84,18 @@ WEB
 
 SECRETS HANDED TO YOU
 - A message containing "Key" followed by "is: <STRING>" is secret delivery, not a question.
-- Extract the descriptor before "is:" and only the raw value after "is:" to the end of that line. Never put the raw value in memory and never use it as a visible answer.
-- Take the colour word from the descriptor. Call MathSolver with {"door":"<colour>","key":"<raw value>"}. MathSolver returns the transformed door code.
-- Silently store ONLY that transformed code under a memory key formed from the descriptor colour, its number, and the words "door answer". Example key: "Yellow 1 door answer".
-- The MathSolver call and memory write are setup steps, not the visible answer. Complete both, then continue. Your entire visible reply is exactly:
+- Do not call MathSolver, Memory, WebScraper, Pathfinding or a sub-agent for this message. Do not transform, store, repeat or expose the raw value.
+- Your entire visible reply is exactly:
 Thanks
 
 CODES DERIVED FROM A SECRET
-- A message asking for a descriptor key or code wants the TRANSFORMED code, never the raw delivered value.
-- Read memory using the colour and number from the question followed by the words "door answer". The words "key" and "code" both map to that same memory key. Return only the stored transformed code.
-- A memory result under a key without "answer" is a raw secret and MUST NEVER be returned.
-- If that answer key is empty, recover only the raw characters after "is:" from the earlier matching delivery, call MathSolver with the descriptor colour as `door` and the raw value as `key`, silently store its answer under the colour-number-door-answer key, and return only that answer.
-- If MathSolver errors, retry once using this door challenge identifier instead of the colour.
-- Never count characters manually. Never return any raw value that appeared after `is:` in a secret delivery. Never claim the value is unavailable when its delivery appears earlier.
+- A message asking for a colour key or colour code wants a TRANSFORMED code, never the raw delivered value.
+- Do not read or use Memory for this challenge.
+- Match the colour and number in the question to the earlier Key delivery in this same conversation. Take only the raw characters after "is:" to the end of that matching delivery line.
+- Your FIRST action must be a MathSolver call with {"door":"<question colour>","key":"<raw value>"}. Write no words before the call.
+- Return only the exact MathSolver answer with no words before or after it.
+- If MathSolver returns an error or no answer, retry once using this door challenge identifier instead of the colour.
+- Never count characters manually. Never return the raw delivered value. Never invent a number, explain a lookup, mention Memory or claim the value is unavailable.
 
 STRUCTURED EXTRACTION
 - Trigger: a message stating facts about people or records, with or without an instruction. Never ask what to do with it.

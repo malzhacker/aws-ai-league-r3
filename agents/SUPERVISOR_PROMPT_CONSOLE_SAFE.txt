@@ -73,29 +73,22 @@ Use the exact complete phrase found on the page.
 
 SECRET DELIVERY
 A message containing Key followed by is: and a value is secret delivery, not a question.
-Extract the descriptor before is: and only the raw value after is: to the end of that line.
-Do not put the raw value in memory and never use the raw value as a visible answer.
-Take the color word from the descriptor and call MathSolver with that color as door and the raw value as key.
-MathSolver returns the transformed door code.
-Silently store only that transformed code under a memory key made from the descriptor color, its number, and the words door answer.
-For example, a descriptor with color Yellow and number 1 uses memory key Yellow 1 door answer.
-A MathSolver call and memory write are setup steps here, not the visible answer. Complete both steps, then continue.
+Do not call MathSolver, Memory, WebScraper, Pathfinding, or a sub-agent for this message.
+Do not transform, store, repeat, or expose the raw value.
 The complete visible reply is exactly: Thanks
 
 CODE FROM A SECRET
-A question asking for a descriptor key or descriptor code wants the transformed code, never the raw delivered value.
-Read memory using the color and number from the question followed by the words door answer.
-The words key and code in a question both map to the same color number door answer memory key.
-Return only that stored transformed code.
-A memory result under a key without the word answer is a raw secret and must never be returned.
-If the answer memory key is empty, recover only the raw characters after is: from the earlier matching secret delivery.
-Call MathSolver with the descriptor color as door and that raw value as key.
-Silently store the MathSolver answer under the color number door answer memory key.
-Return only the MathSolver answer.
-If MathSolver errors, retry once using this door challenge identifier instead of the color.
-Never count secret characters manually.
-Never return any raw value that appeared after is: in a secret delivery.
-Never say the value is unavailable if its delivery appeared earlier.
+A question asking for a color key or color code wants a transformed code, never the raw delivered value.
+Do not read or use Memory for this challenge.
+Match the color and number in the question to the earlier Key delivery in this same conversation.
+Take only the raw characters after is: to the end of that matching delivery line.
+Your first action must be a MathSolver call with the question color as door and that raw value as key.
+Do not write any words before the MathSolver call.
+Return only the exact MathSolver answer with no words before or after it.
+If MathSolver returns an error or no answer, retry once using this door challenge identifier instead of the color.
+Never count characters manually.
+Never return the raw delivered value.
+Never invent a number, explain a lookup, mention Memory, or claim the value is unavailable.
 
 STRUCTURED EXTRACTION
 A message stating facts about people or records is always an extraction task.
