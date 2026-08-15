@@ -609,3 +609,34 @@ def lambda_handler(event, context=None):
 
 def _err(code, msg):
     return {'statusCode': code, 'body': json.dumps({'error': msg}, separators=(',', ':'))}
+
+
+if __name__ == "__main__":
+    # Local test. Reads one event, or a list of them, from a file argument or stdin:
+    #
+    #   echo '{"grid":"ab/cd","legend":"a=normal,b=treasure","start":"A1"}' \
+    #       | python pathfinding_lambda.py
+    #   python pathfinding_lambda.py event.json
+    #
+    # Prints a summary rather than the whole body, because the three fields that
+    # decide whether a route is safe are steps, issues and treasure_reached.
+    import sys
+
+    source = open(sys.argv[1]) if len(sys.argv) > 1 else sys.stdin
+    with source:
+        payload = json.load(source)
+
+    for case in payload if isinstance(payload, list) else [payload]:
+        response = lambda_handler(case, None)
+        body = json.loads(response['body'])
+        if 'error' in body:
+            print("FAILED  %s" % body['error'])
+            continue
+        print("steps            : %d" % body['steps'])
+        print("issues           : %s" % (body['issues'] or '[] none'))
+        print("treasure_reached : %s" % body['treasure_reached'])
+        print("start_position   : %s" % body['start_position'])
+        print("door_codes       : %s" % (body['door_codes'] or '{} none yet'))
+        print("path             : %s%s"
+              % (json.dumps(body['path'][:12]),
+                 " ... +%d more" % (len(body['path']) - 12) if len(body['path']) > 12 else ""))
