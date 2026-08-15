@@ -508,9 +508,16 @@ def lambda_handler(event, context=None):
                 game_map = compact
                 break
 
+        # A door-code request carries no board and needs none, so the cached-board
+        # fallback must not fire for it. Missing this guard made every door request
+        # fail the moment BOARD was configured.
+        is_door_request = bool(body.get('door_code') or body.get('door')
+                               or body.get('door_id') or body.get('challenge_id')
+                               or body.get('door_type'))
+
         # No board in the payload? Fall back to the cached one, but only after the
         # caller's fingerprint row proves it is still the right board.
-        if not game_map:
+        if not game_map and not is_door_request:
             cached = load_cached_board()
             sent_row = fingerprint_row(body)
             if cached and sent_row:
@@ -639,9 +646,9 @@ def lambda_handler(event, context=None):
             "hand. c33 = 5th and 7th characters of the yellow key; c32 = first "
             "2 and last 2 characters of the grey key. If door_codes above is "
             "non-empty, answer with EXACTLY door_codes[door] and nothing else. "
-            "Otherwise call this tool with {\"door_code\": \"c33\", \"key\": "
-            "\"<key string from this run>\"} or MathSolver with "
-            "{\"door\": \"c33\", \"key\": \"<key string>\"} and echo only the "
+            'Otherwise call this tool with {"door_code": "c33", "key": '
+            '"<key string from this run>"} or MathSolver with '
+            '{"door": "c33", "key": "<key string>"} and echo only the '
             "returned code. A wrong answer costs -5 health."
         )
         # Walk the route back over the board and report what it would actually do.
