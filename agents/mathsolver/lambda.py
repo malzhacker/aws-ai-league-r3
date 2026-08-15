@@ -605,6 +605,68 @@ def _trim(value, question):
     return value
 
 
+ORDINAL_SUFFIX = r"(?:st|nd|rd|th)"
+
+
+def normalise_expression(text):
+    """Turn a plain-English arithmetic question into a python expression.
+
+    Written because "the 67 factorial modulo (10 to the 9th) + 7" matched none of the
+    patterns below: "67 factorial" is not "factorial of 67" and "to the 9th" is not
+    "to the power of 9". The solver fell through to needs_code and the supervisor paid
+    for two extra tool calls on that tile, every run.
+
+    The one judgement here is that everything after "modulo" belongs to the modulus
+    when an operator follows it, so "modulo (10 to the 9th) + 7" means mod 10**9 + 7
+    rather than (x mod 10**9) + 7. The first reading is what the game accepts, and the
+    second returns 7, which is obviously not an answer to the question.
+    """
+    text = str(text)
+    text = re.sub(r"\(\s*(Return|Give|Provide)[^)]*\)", " ", text, flags=re.I)
+    text = re.sub(r"^\s*what\s+is\s+(the\s+)?", "", text.strip(), flags=re.I)
+    text = text.rstrip("?. ")
+    text = re.sub(r"\bthe\b", " ", text, flags=re.I)
+
+    # N factorial, and factorial of N
+    text = re.sub(r"factorial\s+of\s+(\d[\d,_]*)", r"fact(\1)", text, flags=re.I)
+    text = re.sub(r"(\d[\d,_]*)\s*factorial", r"fact(\1)", text, flags=re.I)
+
+    # X to the Nth, X to the Nth power, X to the power of N, X squared, X cubed
+    text = re.sub(r"to\s+power\s+of\s+(\d+)", r"** \1", text, flags=re.I)
+    text = re.sub(r"to\s+(\d+)\s*" + ORDINAL_SUFFIX + r"(\s+power)?", r"** \1", text, flags=re.I)
+    text = re.sub(r"\bsquared\b", "** 2", text, flags=re.I)
+    text = re.sub(r"\bcubed\b", "** 3", text, flags=re.I)
+
+    text = re.sub(r"\bplus\b", "+", text, flags=re.I)
+    text = re.sub(r"\bminus\b", "-", text, flags=re.I)
+    text = re.sub(r"\btimes\b|\bmultiplied\s+by\b", "*", text, flags=re.I)
+    text = re.sub(r"\bdivided\s+by\b", "//", text, flags=re.I)
+
+    # modulo takes everything that follows, so a trailing "+ 7" joins the modulus
+    match = re.search(r"\b(?:modulo|mod)\b", text, flags=re.I)
+    if match:
+        left, right = text[:match.start()], text[match.end():]
+        text = "(%s) %% (%s)" % (left.strip(), right.strip())
+
+    text = re.sub(r"[,_]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if re.search(r"\d", text) else None
+
+
+def solve_expression(question):
+    """Evaluate a normalised question, or return None if it is not arithmetic."""
+    expression = normalise_expression(question)
+    if not expression:
+        return None
+    if re.search(r"[A-Za-z]", re.sub(r"\bfact\b", "", expression)):
+        return None            # leftover words mean this is not a pure expression
+    try:
+        value, _printed = run_code(expression)
+    except Exception:
+        return None
+    return value if isinstance(value, (int, float)) else None
+
+
 def solve_question(question):
     q = question.strip()
     low = q.lower()
@@ -661,6 +723,12 @@ def solve_question(question):
             return _trim(value, q)
         except Exception:
             pass
+
+    # English arithmetic the patterns above do not cover, e.g.
+    # "67 factorial modulo (10 to the 9th) + 7"
+    value = solve_expression(q)
+    if value is not None:
+        return _trim(value, q)
 
     return None
 
