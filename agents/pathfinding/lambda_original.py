@@ -1,10 +1,18 @@
-"""Vendored copy of the deployed pathfinding handler, for comparison and testing.
+"""Pathfinding handler for the AWS AI League dungeon agent.
 
-This is the version currently being uploaded, kept here so its behaviour can be
-measured against agents/pathfinding/lambda.py rather than argued about. It differs
-in two ways that matter: the tile taxonomy is hardcoded, so hazards are avoided
-without any configuration, and a ragged row is silently padded with 'normal'
-instead of raising.
+The tile taxonomy is hardcoded, so hazards are avoided with no configuration: c8 and
+trap are never stepped on, and a door is impassable until its key is held.
+
+Two things it does that the score depends on:
+
+  * The board can be cached in the BOARD environment variable, so the supervisor
+    sends two fingerprint rows instead of five hundred tokens of map. Relaying the
+    board is the single largest output cost in a run.
+  * It reports `issues` and `treasure_reached`, which the supervisor prompt gates on
+    before submitting a route.
+
+A ragged row is refused rather than padded. Padding one silently solves a board that
+does not exist, which is far more expensive than a clear error.
 """
 
 import json
@@ -600,10 +608,10 @@ def _err(code, msg):
 
 
 if __name__ == "__main__":
-    # Local test. Reads one event, or a list of them, from a file argument or stdin:
+    # Local test. Reads one event, or a list of them, from a file argument or stdin.
+    # Needs no AWS credentials and no network:
     #
-    #   echo '{"grid":"ab/cd","legend":"a=normal,b=treasure","start":"A1"}' \
-    #       | python pathfinding_lambda.py
+    #   echo '{"start":"A5","first_row":"c42,c18,normal"}' | python pathfinding_lambda.py
     #   python pathfinding_lambda.py event.json
     #
     # Prints a summary rather than the whole body, because the three fields that
