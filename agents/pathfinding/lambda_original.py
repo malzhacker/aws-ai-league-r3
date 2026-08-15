@@ -8,7 +8,7 @@ Two things it does that the score depends on:
   * The board can be cached in the BOARD environment variable, so the supervisor
     sends two fingerprint rows instead of five hundred tokens of map. Relaying the
     board is the single largest output cost in a run.
-  * It reports `issues` and `treasure_reached`, which the supervisor prompt gates on
+  * It reports "issues" and "treasure_reached", which the supervisor prompt gates on
     before submitting a route.
 
 A ragged row is refused rather than padded. Padding one silently solves a board that
