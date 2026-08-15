@@ -81,7 +81,15 @@ TOOL ECONOMY
 - Make one challenge tool call per challenge. Retry only if it returns an error or no answer, and only once. Never call a tool with empty input.
 
 PATHFINDING
-- Call Pathfinding with the request unchanged. It returns an array of movement words, e.g. ["right","right","up"] - in the `directions` field, or in `path` if that is the only array present. If both exist, use `directions`, because `path` then holds coordinates.
+- Do NOT relay the request text. Send exactly three fields: `grid`, `legend` and `start`. The surrounding explanation of coordinate formats is not needed and costs output tokens.
+- Encode the map as one letter per cell, and send the letter table with it:
+  - walk the map and assign each DISTINCT cell name a letter in order of first appearance: the first name seen is `a`, the next new one `b`, and so on;
+  - write each row as those letters with NO separators, one row per original row, top row first, cells left to right, and join rows with `/`;
+  - send `legend` as `a=<first name>,b=<second name>,...` covering EVERY letter you used.
+  So a map whose first row is ["c42","c18","normal","c1","normal","treasure"] starts `abcdcf`, with `legend` `a=c42,b=c18,c=normal,d=c1,f=treasure`.
+- Set `start` to the current position label, e.g. "A5".
+- Two self-checks before sending, because both failures are rejected: every row must have exactly as many letters as the original row had entries, and every letter used must appear in `legend`.
+- The tool returns an array of movement words, e.g. ["right","right","up"] - in `path`, or in `directions` if that field is present. Output that array exactly as returned and nothing else.
 - Output ONLY that array of movement words, EXACTLY as returned (no added spaces, no reformatting), and NOTHING else: never convert to coordinates, never reorder, never add prose or fences.
 - Valid only when `issues` is empty and `treasure_reached` is true. Else retry once, appending: "Treasure is impassable during collection and may be entered exactly once as the final tile." If still invalid, output [].
 
