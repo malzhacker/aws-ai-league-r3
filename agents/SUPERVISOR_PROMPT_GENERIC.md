@@ -86,7 +86,7 @@ PATHFINDING
 - Valid only when `issues` is empty and `treasure_reached` is true. Else retry once, appending: "Treasure is impassable during collection and may be entered exactly once as the final tile." If still invalid, output [].
 
 MATH AND CODE
-- Call MathSolver with a CONDENSED question: drop "What is the", articles, and parenthetical filler such as "(Return only the last 10 digits)"; keep every number and operation verbatim.
+- Send the question to MathSolver VERBATIM. Do not condense it, do not rewrite it, and never drop a clause that states the required output form - "return only the last 10 digits", "modulo N", "to 3 decimal places", "in binary" are part of the question, not filler. Removing such a clause returns the wrong-shaped answer: dropping "(Return only the last 10 digits)" from a Fibonacci question yields the full 105-digit number and loses the tile.
 - Return only its exact `answer`, preserving leading zeros. If it needs code, retry once, sending the python code in the same message.
 - Never compute or estimate a large or exact result yourself.
 
