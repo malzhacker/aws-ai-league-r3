@@ -27,27 +27,26 @@ A URL or named website uses WebScraper only.
 A short general knowledge, trivia, or riddle question with no URL and no data payload is answered directly with no tool.
 A message that only states facts is a structured extraction task with no tool.
 Never use a sub-agent for a scored challenge.
-Make one challenge tool call. Retry only once and only after an error, missing answer, unsafe path, or cache miss.
+Make one challenge tool call. Retry only once and only after an error, missing answer, unsafe path, or invalid board token.
 Never call a challenge tool with empty input.
 
 PATHFINDING
 Send only the map field and position. Do not relay the full request text.
 Never abbreviate, rename, recount, or re-encode map cells.
-Silently read memory key pathfinding_cache_id.
-If that value does not start with b1-, send the whole map exactly as received.
-If that value starts with b1-, copy the current top row and current bottom row exactly.
-Create a two-row map value.
-In row one, place the exact cache ID first, followed by every item from the exact top row.
-In row two, place the same exact cache ID first, followed by every item from the exact bottom row.
-Do not change or omit any copied map item.
+Silently read memory key pathfinding_board_token.
+If that value starts with bz1-, send it as the only string inside a one-row map value.
+If that value does not start with bz1-, send the whole map exactly as received.
+Copy the board token exactly. Never shorten, decode, edit, or explain it.
 Use the position field name and value type declared by the Pathfinding tool schema.
 If position is an object, send row and column numbers.
 If position is a string, send the cell label.
 If position is an array, send row and column.
 Never invent a field that is absent from the tool schema.
-A full-map response includes cache_id. Silently save its exact value to memory key pathfinding_cache_id.
-If the tool returns cache_miss, cache_mismatch, cache_signature_required, or needs_game_map true, retry once with the whole map copied exactly from the challenge. Save the new cache_id silently.
-The cache is process local. Never retry the compact cache request twice.
+A full-map response includes board_token. Silently save its exact value to memory key pathfinding_board_token.
+If the tool returns board_token_invalid or needs_game_map true, retry once with the whole map copied exactly from the challenge. Save the new board_token silently.
+The board token is self-contained and works across Lambda cold starts.
+Reuse it only for the same stable board. Before a new or evaluation board, the operator must clear memory key pathfinding_board_token.
+Never retry an invalid token twice.
 The tool returns moves in path.
 Return only the path array exactly as returned. Do not add spaces, prose, coordinates, or formatting.
 If issues is not empty or treasure_reached is not true, retry once with the whole map.

@@ -1,20 +1,21 @@
 """Pathfinding handler for the AWS AI League dungeon agent.
 
-The first full runtime map is validated, solved, and registered under a derived
-content ID. Later warm invocations can send that ID, the current top/bottom
-fingerprint rows, and the start position. No board is embedded in this file, and a
-missing or boundary-mismatched cache entry fails explicitly instead of routing on a
-guessed default board.
+A full runtime map is validated, solved, and returned as a compact reversible board
+token. Later invocations send that token and any Lambda container can reconstruct the
+exact board without a server-side cache. No board is embedded in this file.
 
 The handler also reports ``issues`` and ``treasure_reached`` so the supervisor can
-refuse an unsafe route. Ragged or malformed maps are rejected rather than repaired.
+refuse an unsafe route. Ragged, malformed, or corrupted maps are rejected rather than
+repaired or guessed.
 """
 
+import base64
 import hashlib
 import json
 import os
 import re
-from collections import OrderedDict, deque
+import zlib
+from collections import deque
 
 CELL_POINTS = {"c7": 250}
 COLLECTIBLE_COINS = {"c7"}
@@ -30,24 +31,24 @@ DOOR_HINTS = {
 }
 
 # --------------------------------------------------------------------------- #
-# Runtime board cache.
+# Stateless board token.
 #
-# A full map registers itself automatically. Its ID is derived from canonical map
-# content, so a caller cannot choose an ID and poison another entry. The cache is
-# deliberately bounded and contains no fallback board. Lambda process memory is
-# best-effort: a cold execution environment returns ``cache_miss`` and asks for the
-# full map again rather than solving a guessed board.
+# The token contains the canonical runtime board compressed with zlib, plus a
+# content checksum. It is data derived from the request, not a board in source code.
+# Because reconstruction needs no process memory, cold starts and Lambda scale-out
+# cannot turn a compact call into an expensive cache-miss retry.
 # --------------------------------------------------------------------------- #
 
 NEWLINE = chr(10)
 DEFAULT_STRATEGY = os.environ.get("STRATEGY", "collect_all")
-CACHE_ID_PREFIX = "b1-"
-MAX_CACHED_BOARDS = max(1, min(64, int(os.environ.get("MAX_CACHED_BOARDS", "8"))))
+BOARD_TOKEN_PREFIX = "bz1-"
+BOARD_TOKEN_CHECKSUM_BYTES = 8
+MAX_BOARD_TOKEN_CHARS = 10000
+MAX_CANONICAL_BOARD_BYTES = 2000000
 MAX_BOARD_ROWS = 100
 MAX_BOARD_COLS = 100
 MAX_BOARD_CELLS = 10000
 MAX_CELL_CHARS = 128
-BOARD_CACHE = OrderedDict()
 
 
 def _validate_board(value):
@@ -91,80 +92,78 @@ def _canonical_board(board):
     return json.dumps(board, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def _cache_id_for(canonical):
-    """Return a globally deterministic 128-bit content address."""
-    return CACHE_ID_PREFIX + hashlib.sha256(canonical).hexdigest()[:32]
-
-
-def register_board(value):
+def encode_board_token(value):
+    """Validate a board and return (self-contained token, defensive board copy)."""
     board = _validate_board(value)
     canonical = _canonical_board(board)
-    cache_id = _cache_id_for(canonical)
-    existing = BOARD_CACHE.get(cache_id)
-    if existing is not None and _canonical_board(existing) != canonical:
-        raise ValueError("board cache hash collision")
-    BOARD_CACHE[cache_id] = tuple(tuple(row) for row in board)
-    BOARD_CACHE.move_to_end(cache_id)
-    while len(BOARD_CACHE) > MAX_CACHED_BOARDS:
-        BOARD_CACHE.popitem(last=False)
-    return cache_id, [row[:] for row in board]
+    if len(canonical) > MAX_CANONICAL_BOARD_BYTES:
+        raise ValueError("game_map encoding is too large")
+    checksum = hashlib.sha256(canonical).digest()[:BOARD_TOKEN_CHECKSUM_BYTES]
+    packed = checksum + zlib.compress(canonical, 9)
+    encoded = base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+    return BOARD_TOKEN_PREFIX + encoded, board
 
 
-def get_cached_board(cache_id):
-    if not isinstance(cache_id, str):
-        return None
-    cache_id = cache_id.strip().lower()
-    if not re.fullmatch(r"b1-[0-9a-f]{32}", cache_id):
-        return None
-    stored = BOARD_CACHE.get(cache_id)
-    if stored is None:
-        return None
-    BOARD_CACHE.move_to_end(cache_id)
-    return [list(row) for row in stored]
+def decode_board_token(token):
+    """Reconstruct and validate a board without relying on Lambda process state."""
+    if not isinstance(token, str):
+        raise ValueError("board_token must be a string")
+    token = token.strip()
+    if not token.startswith(BOARD_TOKEN_PREFIX):
+        raise ValueError("board_token has an unsupported version")
+    encoded = token[len(BOARD_TOKEN_PREFIX):]
+    if (not encoded or len(token) > MAX_BOARD_TOKEN_CHARS
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded)):
+        raise ValueError("board_token has an invalid format")
+
+    try:
+        padding = "=" * ((-len(encoded)) % 4)
+        packed = base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
+    except Exception as exc:
+        raise ValueError("board_token is not valid base64") from exc
+    if len(packed) <= BOARD_TOKEN_CHECKSUM_BYTES:
+        raise ValueError("board_token is truncated")
+
+    checksum = packed[:BOARD_TOKEN_CHECKSUM_BYTES]
+    compressed = packed[BOARD_TOKEN_CHECKSUM_BYTES:]
+    try:
+        decompressor = zlib.decompressobj()
+        canonical = decompressor.decompress(compressed, MAX_CANONICAL_BOARD_BYTES + 1)
+        if (len(canonical) > MAX_CANONICAL_BOARD_BYTES or decompressor.unconsumed_tail
+                or not decompressor.eof or decompressor.unused_data):
+            raise ValueError("board_token expands beyond its allowed size")
+    except zlib.error as exc:
+        raise ValueError("board_token has invalid compressed data") from exc
+
+    if hashlib.sha256(canonical).digest()[:BOARD_TOKEN_CHECKSUM_BYTES] != checksum:
+        raise ValueError("board_token checksum mismatch")
+    try:
+        parsed = json.loads(canonical.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("board_token does not contain valid board JSON") from exc
+    board = _validate_board(parsed)
+    if _canonical_board(board) != canonical:
+        raise ValueError("board_token board encoding is not canonical")
+    return board
 
 
-def _row_fingerprint(value):
-    if isinstance(value, list) and value and all(isinstance(cell, str) for cell in value):
-        return list(value)
-    if isinstance(value, str) and value.strip():
-        parts = [part.strip().strip('"\'') for part in value.split(',')]
-        if len(parts) > 1 and all(parts):
-            return parts
+def _board_token_reference(body, game_map):
+    """Read a token from an optional field or the existing one-cell map field."""
+    for key in ("board_token", "cache_id", "board_id"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip().startswith(BOARD_TOKEN_PREFIX):
+            return value.strip()
+    if (isinstance(game_map, list) and len(game_map) == 1
+            and isinstance(game_map[0], list) and len(game_map[0]) == 1
+            and isinstance(game_map[0][0], str)
+            and game_map[0][0].strip().startswith(BOARD_TOKEN_PREFIX)):
+        return game_map[0][0].strip()
     return None
 
 
-def _cache_reference(body, game_map):
-    """Return (ID, top row, bottom row) from fields or a map-shaped envelope.
-
-    The envelope keeps the deployed ``game_map`` schema: two rows, each prefixed
-    with the same cache ID. The remaining cells are copied top/bottom fingerprints
-    from the current challenge, preventing an old remembered ID from silently
-    selecting a different cached board whose boundary changed.
-    """
-    declared = None
-    for key in ("cache_id", "board_id", "board_cache_id"):
-        value = body.get(key)
-        if isinstance(value, str) and value.strip():
-            declared = value.strip().lower()
-            break
-    if declared:
-        return (declared, _row_fingerprint(body.get("first_row")),
-                _row_fingerprint(body.get("last_row")))
-
-    if (isinstance(game_map, list) and len(game_map) == 2
-            and all(isinstance(row, list) and len(row) >= 2 for row in game_map)
-            and all(isinstance(cell, str) for row in game_map for cell in row)):
-        first_id = game_map[0][0].strip().lower()
-        last_id = game_map[1][0].strip().lower()
-        if first_id == last_id and first_id.startswith(CACHE_ID_PREFIX):
-            return first_id, list(game_map[0][1:]), list(game_map[1][1:])
-    return None, None, None
-
-
-def _cache_retry(reason, cache_id):
-    payload = {"error": reason, "cache_id": cache_id, "needs_game_map": True}
-    # Keep HTTP 200 so AgentCore surfaces the retry payload instead of replacing a
-    # non-2xx response with a generic tool failure.
+def _token_retry(reason):
+    payload = {"error": reason, "needs_game_map": True}
+    # Keep HTTP 200 so AgentCore exposes the retry instruction to the supervisor.
     return {"statusCode": 200,
             "body": json.dumps(payload, separators=(",", ":"))}
 
@@ -526,39 +525,35 @@ def lambda_handler(event, context=None):
                                or body.get('door_id') or body.get('challenge_id')
                                or body.get('door_type'))
 
-        # A full runtime board always wins and registers itself automatically. A
-        # later request may use cache_id plus boundary rows, or a two-row
-        # [[ID,...top],[ID,...bottom]] envelope inside game_map when the deployed
-        # Gateway schema exposes only the existing map field.
+        # A full runtime board always wins and returns a self-contained token. A
+        # later request can put that token inside [[...]] so it passes the existing
+        # game_map Gateway schema. Decoding never depends on Lambda process state.
         raw_map = None
         for key in ('game_map', 'grid', 'map', 'board', 'tiles', 'dungeon'):
             if key in body and body.get(key) not in (None, []):
                 raw_map = body.get(key)
                 break
 
-        cache_id, sent_top, sent_bottom = _cache_reference(body, raw_map)
-        map_is_cache_envelope = bool(
-            cache_id and isinstance(raw_map, list) and len(raw_map) == 2
-            and all(isinstance(row, list) and row for row in raw_map)
-            and all(str(row[0]).strip().lower() == cache_id for row in raw_map))
+        board_token = _board_token_reference(body, raw_map)
+        map_is_token = bool(
+            board_token and isinstance(raw_map, list) and len(raw_map) == 1
+            and isinstance(raw_map[0], list) and len(raw_map[0]) == 1
+            and raw_map[0][0] == board_token)
         game_map = []
-        cache_status = None
+        token_status = None
 
-        if raw_map is not None and not map_is_cache_envelope:
+        if raw_map is not None and not map_is_token:
             try:
-                cache_id, game_map = register_board(raw_map)
+                board_token, game_map = encode_board_token(raw_map)
             except ValueError as exc:
                 return _err(400, str(exc))
-            cache_status = 'registered'
-        elif cache_id and not is_door_request:
-            game_map = get_cached_board(cache_id)
-            if game_map is None:
-                return _cache_retry('cache_miss', cache_id)
-            if sent_top is None or sent_bottom is None:
-                return _cache_retry('cache_signature_required', cache_id)
-            if sent_top != game_map[0] or sent_bottom != game_map[-1]:
-                return _cache_retry('cache_mismatch', cache_id)
-            cache_status = 'hit'
+            token_status = 'encoded'
+        elif board_token and not is_door_request:
+            try:
+                game_map = decode_board_token(board_token)
+            except ValueError:
+                return _token_retry('board_token_invalid')
+            token_status = 'decoded'
 
         if (not game_map and not is_door_request and re.search(
                 r"\b(fibonacci|factorial|modulo|prime|add|multiply|divide|digit|"
@@ -607,7 +602,7 @@ def lambda_handler(event, context=None):
             strategy = 'swift'
 
         if not game_map:
-            return _err(400, 'Missing game_map or cache_id')
+            return _err(400, 'Missing game_map or board_token')
 
         rows, cols = len(game_map), len(game_map[0])
 
@@ -684,10 +679,10 @@ def lambda_handler(event, context=None):
                   'treasure_reached': treasure_reached,
                   'door_hints': door_hints, 'door_codes': door_codes,
                   'door_instructions': door_instructions}
-        # The caller needs the ID only after a full-map registration. Cache-hit
-        # responses omit it to keep the scored tool output at its minimum.
-        if cache_status == 'registered':
-            result['cache_id'] = cache_id
+        # Return the token only after full-map encoding. Decoded-token responses
+        # omit it to keep tool output minimal.
+        if token_status == 'encoded':
+            result['board_token'] = board_token
         return {'statusCode': 200, 'body': json.dumps(result, separators=(',', ':'))}
 
     except Exception as e:
@@ -703,7 +698,7 @@ if __name__ == "__main__":
     # Needs no AWS credentials and no network:
     #
     #   echo '{"game_map":[["normal","treasure"]],"start":"A1"}' | python lambda.py
-    #   echo '{"game_map":[["b1-<32 hex>","<top cells>"],["b1-<32 hex>","<bottom cells>"]],"start":"A1"}' | python lambda.py
+    #   echo '{"game_map":[["bz1-<token>"]],"start":"A1"}' | python lambda.py
     #
     # Prints a summary rather than the whole body, because the three fields that
     # decide whether a route is safe are steps, issues and treasure_reached.

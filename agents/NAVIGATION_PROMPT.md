@@ -9,18 +9,16 @@ deployed before writing anything in this box.
 
 It hardcodes the taxonomy: `DAMAGE_CELLS` is `{c8, trap}`, keys and doors are fixed, and
 the strategy defaults to `collect_all`. It contains **no board**. A full runtime map
-registers under a content-derived cache ID. Later calls to the same warm execution
-environment send that ID plus exact top/bottom fingerprint rows through the existing
-map field. A cold, evicted, or boundary-mismatched entry asks for the full map again
-instead of routing on fallback data.
+is validated and converted into a reversible `bz1-` token containing its compressed
+canonical data plus a checksum. Later calls send that token as `[["bz1-..."]]`,
+and any Lambda execution environment reconstructs the exact board. No process cache, warm-container affinity, boundary fingerprint, or
+external storage is involved.
 
-This is an opportunistic optimization: Lambda process caches are not shared or durable,
-so a miss costs one compact call before the full-map retry. The two-row envelope and
-HTTP-200 retry body must be smoke-tested through the deployed AgentCore Gateway; local
-Lambda tests cannot prove Gateway validation. Boundary rows prevent reuse when either
-edge changes, but cannot detect a board change confined entirely to middle rows. Reuse
-only where the competition keeps the board stable across runs; otherwise send the full
-map once for that run.
+A corrupted or invalid token asks for the full map once. Since the complete board is
+inside the token, decoding never depends on stale server-side data. Before using a
+new or evaluation board, clear memory key `pathfinding_board_token`; its next full-map
+call creates a token from that runtime board. Local tests prove the token round-trip;
+the one-cell map shape still needs one deployed AgentCore Gateway smoke test.
 
 The strategy still needs nothing beyond one word. So the entire Navigation Prompt is:
 
