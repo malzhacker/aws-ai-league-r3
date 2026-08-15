@@ -3,6 +3,32 @@
 The pathfinding Lambda knows no tile IDs. It learns the taxonomy from whatever it
 is told, and this box is the channel. Two ways to fill it in — pick one.
 
+## A bare keyword is fatal — read this first
+
+Putting only `collect_all` in this box kills the run. With no taxonomy, every tile
+looks like a collectible objective, so the solver deliberately routes **into** the
+spikes to "collect" them. Measured on the current board:
+
+| Navigation Prompt | Steps | Spike tiles entered |
+| --- | --- | --- |
+| `collect_all` alone | 81 | **6** |
+| Option A or Option B below | 69 | **0** |
+
+Six spike entries is five more hearts than the run has. One real run died this way
+at 1131 points: three spikes plus two lost challenges is exactly five hearts.
+
+The hazard list must reach the Lambda through **one** of these three channels, and
+at least one is mandatory:
+
+1. the `avoid:` line of Option A;
+2. the pasted challenge list of Option B, from which hazards are derived;
+3. the `AVOID_TILES` Lambda environment variable, which keeps board data out of
+   every prompt box entirely.
+
+Channel 3 is the one to prefer if you are worried about hardcoding: an environment
+variable is configuration, not a prompt, and it is the same approach already used
+for `DOOR_RULES` on MathSolver.
+
 ## Option A — declare the taxonomy (short, explicit)
 
 ```text
