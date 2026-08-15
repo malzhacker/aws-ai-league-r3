@@ -171,6 +171,22 @@ def _collect_key_map(body):
 
 
 def _parse_start(pos):
+    # A dict is the shape the game itself uses for position, {"row":4,"col":0}, and
+    # the gateway schema is likely to declare it that way too. Reaching the string
+    # branch with a dict silently produced (0,0), a wrong start with no error.
+    if isinstance(pos, dict):
+        for row_key in ('row', 'r', 'rowIndex', 'row_index', 'y'):
+            if row_key in pos:
+                for col_key in ('col', 'c', 'column', 'colIndex', 'col_index', 'x'):
+                    if col_key in pos:
+                        try:
+                            return (int(pos[row_key]), int(pos[col_key]))
+                        except (TypeError, ValueError):
+                            return (0, 0)
+        for label_key in ('label', 'cell', 'position', 'start'):
+            if label_key in pos:
+                return _parse_start(pos[label_key])
+        return (0, 0)
     try:
         if isinstance(pos, (list, tuple)):
             if len(pos) == 1:
@@ -482,10 +498,11 @@ def lambda_handler(event, context=None):
         #
         # Without this branch a two-row board is solved literally, which returned a
         # 15-step route through nine walls and two spikes.
-        if game_map and len(game_map) == 2:
+        if game_map and len(game_map) in (1, 2):
             cached, _note = board_cache_status()
             if cached and len(cached) > 2:
-                top, bottom = list(game_map[0]), list(game_map[1])
+                top = list(game_map[0])
+                bottom = list(game_map[1]) if len(game_map) == 2 else list(cached[-1])
                 if top == list(cached[0]) and bottom == list(cached[-1]):
                     game_map = cached
                 else:

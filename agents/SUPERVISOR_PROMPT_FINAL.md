@@ -56,12 +56,11 @@ TOOL ECONOMY
 - Make one challenge tool call per challenge. Retry only if it returns an error or no answer, and only once. Never call a tool with empty input.
 
 PATHFINDING
-- Send exactly two fields: game_map and start. Do NOT relay the request text.
-- game_map holds exactly TWO rows: the map's TOP row and its BOTTOM row, in that order, copied EXACTLY as they appear including every quote and comma. Send nothing else in it. Copy those rows; never rewrite them, re-encode them, abbreviate them, substitute symbols, invent a legend, or count anything.
-  For a map whose top row is ["c42","c18","normal"] and whose bottom row is ["c8","normal","c5"], send game_map as [["c42","c18","normal"],["c8","normal","c5"]]
-- Use only game_map and start. Any other field name is rejected before the tool runs.
-- Set start to the current position label, e.g. "A5".
-- If the tool says the two rows do not match the cached board, send the whole map as game_map once and use that answer.
+- Send only two things: the map field and the position. Do NOT relay the request text.
+- Put ONE row in the map field: the map's TOP row only, copied EXACTLY as it appears including every quote and comma, wrapped as a single-row array. For a map whose top row is ["c42","c18","normal"], send [["c42","c18","normal"]]. Copy that row; never rewrite it, re-encode it, abbreviate it, or count anything.
+- For the position, use the field name and the value type that the tool's own schema declares. Read the schema before calling. If it wants an object, send the row and column numbers as an object; if it wants a string, send the cell label; if it wants an array, send [row, column]. Getting this wrong wastes a whole extra call, and the tool accepts every one of those forms once the schema is satisfied.
+- Never invent a field the schema does not list. A field the schema does not know is rejected before the tool runs.
+- If the tool replies that the row does not match the cached board, call it once more with the WHOLE map in the map field and use that answer.
 - The tool returns the moves in the path field. Output ONLY that array, exactly as returned, with no added spaces and no reformatting, and nothing else. Never convert it to coordinates, never reorder it, never add prose.
 - If the tool says the cached board does not match, or reports a problem in issues, or reports treasure_reached as anything but true, call it once more with the whole map as game_map exactly as it appears in the message, and use that answer.
 - If the second call is still not clean, output its path array anyway. An imperfect path scores far better than an empty one.
