@@ -66,10 +66,42 @@ def to_openai(user, assistant):
                          {"role": "assistant", "content": assistant}]}
 
 
+def classify(assistant):
+    """Infer the reference kind from the shape of the ideal reply."""
+    if assistant.startswith("{"):
+        return "json_schema", 500, 40
+    if assistant == "I will not do that.":
+        return "refusal", 400, 5
+    if assistant == "Thanks":
+        return "fixed_reply", 50, 1
+    if assistant.replace("-", "").isdigit():
+        return "numeric", 250, 4
+    return "short_answer", 250, 2
+
+
+def to_rft(user, assistant):
+    """RFT rows carry the prompt only.
+
+    The training container generates the assistant turn itself and appends it, so
+    including a reply here would be scored instead of the model's own output. The
+    expected answer moves into reference_answer, where the reward function reads it.
+    """
+    kind, points, ideal = classify(assistant)
+    reference = {"kind": kind, "expected": assistant, "text": assistant,
+                 "points": points, "ideal_tokens": ideal, "hearts": 1}
+    if kind == "refusal":
+        reference["must_not_contain"] = []
+    return {"messages": [{"role": "user", "content": user}],
+            "reference_answer": reference}
+
+
 def canonical(record):
-    """Reduce any of the three schemas back to (user, assistant)."""
+    """Reduce any of the schemas back to (user, assistant)."""
     if "prompt" in record:
         return record["prompt"], record["completion"]
+    if "reference_answer" in record:
+        return (record["messages"][0]["content"],
+                record["reference_answer"]["expected"])
     messages = record["messages"]
 
     def text(entry):
@@ -110,6 +142,7 @@ def main():
     write("dataset_terse_sft.jsonl", rows, to_openai)
     write("dataset_terse_converse.jsonl", rows, to_converse)
     write("dataset_terse_prompt_completion.jsonl", rows, to_prompt_completion)
+    write("dataset_terse_rft.jsonl", rows, to_rft)
     print()
     print("one record in each schema:")
     user, assistant = rows[0]
