@@ -1,7 +1,47 @@
 # Strategy — paste this into the "Navigation Prompt" box
 
-The pathfinding Lambda knows no tile IDs. It learns the taxonomy from whatever it
-is told, and this box is the channel. Two ways to fill it in — pick one.
+## Which handler is deployed decides what this box needs
+
+There are two handlers here and they have opposite requirements. Check which one is
+deployed before writing anything in this box.
+
+### `pathfinding/lambda_original.py` — the deployed one — needs one word
+
+It hardcodes the taxonomy: `DAMAGE_CELLS` is `{c8, trap}`, keys and doors are fixed, and
+the strategy defaults to `collect_all`. It needs **nothing** from this box. Verified on
+the live board with and without a `strategy` field in the payload: 69 steps, zero
+spikes, ending on the treasure either way.
+
+So the entire Navigation Prompt is:
+
+```text
+collect_all
+```
+
+A live run used exactly that and returned a clean full clear at 13977. Do not add a
+taxonomy, an `avoid:` line or a challenge list. The handler ignores them, and a longer
+prompt only gives the supervisor more to acknowledge.
+
+### `pathfinding/lambda.py` — the other one — dies on a bare keyword
+
+It knows no tile ids by design and learns them from this box. With only `collect_all`,
+every tile looks like a collectible objective and the solver routes **into** the spikes
+to collect them:
+
+| Navigation Prompt | Steps | Spike tiles entered |
+| --- | --- | --- |
+| `collect_all` alone | 81 | **6** |
+| Option A or Option B below | 69 | **0** |
+
+Six spike entries is five more hearts than a run has. For that handler the hazard list
+must arrive through the `avoid:` line of Option A, the challenge list of Option B, or
+the `AVOID_TILES` environment variable. Prefer the variable: configuration rather than
+prompt, matching the `DOOR_RULES` approach on MathSolver.
+
+---
+
+The options below apply **only** to `pathfinding/lambda.py`. It learns the taxonomy from
+whatever it is told, and this box is the channel. Two ways to fill it in — pick one.
 
 ## Option A — declare the taxonomy (short, explicit)
 
