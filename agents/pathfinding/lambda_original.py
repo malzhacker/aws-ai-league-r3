@@ -571,8 +571,35 @@ def lambda_handler(event, context=None):
             "{\"door\": \"c33\", \"key\": \"<key string>\"} and echo only the "
             "returned code. A wrong answer costs -5 health."
         )
+        # Walk the route back over the board and report what it would actually do.
+        # The supervisor prompt gates on these two fields, so without them it can
+        # never confirm a route is safe, and a prompt that says "otherwise output []"
+        # would submit an empty move list and end the run.
+        issues = []
+        rr, cc = start_pos
+        for move in path:
+            dr, dc = {'up': (-1, 0), 'down': (1, 0),
+                      'left': (0, -1), 'right': (0, 1)}[move]
+            rr, cc = rr + dr, cc + dc
+            if not (0 <= rr < rows and 0 <= cc < cols):
+                issues.append('step leaves the board at (%d,%d)' % (rr, cc))
+                break
+            cell = game_map[rr][cc]
+            if cell == 'wall':
+                issues.append('walks into a wall at (%d,%d)' % (rr, cc))
+            elif cell in DAMAGE_CELLS:
+                issues.append('enters %s at (%d,%d)' % (cell, rr, cc))
+        treasure_reached = (rr, cc) == tuple(treasure) and not issues
+        if path and (rr, cc) != tuple(treasure):
+            issues.append('path ends at (%d,%d), not on the treasure at (%d,%d)'
+                          % (rr, cc, treasure[0], treasure[1]))
+        if not path:
+            issues.append('empty path')
+
         result = {'path': path, 'steps': len(path), 'start_position': list(start_pos),
-                  'strategy': strategy, 'door_hints': door_hints, 'door_codes': door_codes,
+                  'strategy': strategy, 'issues': issues,
+                  'treasure_reached': treasure_reached,
+                  'door_hints': door_hints, 'door_codes': door_codes,
                   'door_instructions': door_instructions}
         return {'statusCode': 200, 'body': json.dumps(result, separators=(',', ':'))}
 

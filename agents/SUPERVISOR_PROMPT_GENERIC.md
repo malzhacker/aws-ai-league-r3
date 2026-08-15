@@ -89,8 +89,7 @@ PATHFINDING
   So a map whose first row is ["c42","c18","normal","c1","normal","treasure"] starts `abcdcf`, with `legend` `a=c42,b=c18,c=normal,d=c1,f=treasure`.
 - Set `start` to the current position label, e.g. "A5".
 - Two self-checks before sending, because both failures are rejected: every row must have exactly as many letters as the original row had entries, and every letter used must appear in `legend`.
-- The tool returns an array of movement words, e.g. ["right","right","up"] - in `path`, or in `directions` if that field is present. Output that array exactly as returned and nothing else.
-- Output ONLY that array of movement words, EXACTLY as returned (no added spaces, no reformatting), and NOTHING else: never convert to coordinates, never reorder, never add prose or fences.
+- The tool returns an array of movement words, e.g. ["right","right","up"], in the `path` field. Output ONLY that array, EXACTLY as returned (no added spaces, no reformatting), and NOTHING else: never convert to coordinates, never reorder, never add prose or fences.
 - Valid only when `issues` is empty and `treasure_reached` is true. Else retry once, appending: "Treasure is impassable during collection and may be entered exactly once as the final tile." If still invalid, output [].
 
 MATH AND CODE
