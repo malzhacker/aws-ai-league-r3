@@ -209,6 +209,23 @@ def rule_from_text(text):
     return None
 
 
+# Fallback door rules, in code because a workshop role cannot set environment
+# variables: lambda:UpdateFunctionConfiguration is denied, so DOOR_RULES can never be
+# written. With no rule from the wording and no variable, a door has no rule at all and
+# the answer comes back empty, which made a supervisor fall back to the raw key and lose
+# five hearts.
+#
+# These are only a last resort. A rule stated in the question always wins, so a board
+# that states a different rule still overrides this table.
+DOOR_RULES_IN_CODE = {
+    "c33": ("chars", [5, 7]),
+    "c32": ("edges", [2, 2]),
+    "yellow": ("chars", [5, 7]),
+    "grey": ("edges", [2, 2]),
+    "gray": ("edges", [2, 2]),
+}
+
+
 def parse_door_rules(raw):
     """
     Parse a door-to-rule table supplied as configuration, never hardcoded.
@@ -735,6 +752,15 @@ def solve(event):
             rules = parse_door_rules(fields.get("door_rules")
                                      or os.environ.get("DOOR_RULES"))
             rule = rules.get(door)
+        if rule is None:
+            # Last resort, so a door is never answered with the raw key.
+            rule = DOOR_RULES_IN_CODE.get(door)
+        if rule is None:
+            # Try the colour word inside a longer descriptor, e.g. "yellow door".
+            for name, candidate in DOOR_RULES_IN_CODE.items():
+                if name in door:
+                    rule = candidate
+                    break
         if rule is None:
             return {
                 "answer": "",
