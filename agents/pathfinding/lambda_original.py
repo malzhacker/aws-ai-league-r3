@@ -55,20 +55,36 @@ NEWLINE = chr(10)
 DEFAULT_STRATEGY = os.environ.get("STRATEGY", "collect_all")
 
 
-def load_cached_board():
+def board_cache_status():
+    """Return (board, explanation). The explanation is surfaced in errors.
+
+    A malformed BOARD used to look identical to an unset one, which is unhelpful
+    when the caller cannot invoke this function directly to inspect it. Now the
+    reason travels back in the error message.
+    """
     raw = os.environ.get("BOARD")
-    if not raw:
-        return None
+    if not raw or not raw.strip():
+        return None, "BOARD is not set"
     try:
         board = json.loads(raw)
-    except ValueError:
-        return None
-    if (isinstance(board, list) and board
-            and all(isinstance(row, list) and row for row in board)
-            and all(isinstance(cell, str) for row in board for cell in row)
-            and len({len(row) for row in board}) == 1):
-        return board
-    return None
+    except ValueError as exc:
+        return None, ("BOARD is set (%d characters) but is not valid JSON: %s. It must "
+                      "be one line, an array of arrays of quoted tile names."
+                      % (len(raw), exc))
+    if not (isinstance(board, list) and board
+            and all(isinstance(row, list) and row for row in board)):
+        return None, "BOARD parsed but is not a non-empty array of non-empty arrays"
+    if not all(isinstance(cell, str) for row in board for cell in row):
+        return None, "BOARD contains a non-string cell; every tile name must be quoted"
+    widths = sorted({len(row) for row in board})
+    if len(widths) > 1:
+        return None, ("BOARD is ragged: row widths are %s. Every row must have the same "
+                      "number of cells." % ", ".join(str(w) for w in widths))
+    return board, "BOARD loaded: %d rows of %d" % (len(board), widths[0])
+
+
+def load_cached_board():
+    return board_cache_status()[0]
 
 
 def fingerprint_row(body):
@@ -434,7 +450,7 @@ def lambda_handler(event, context=None):
         # No board in the payload? Fall back to the cached one, but only after the
         # caller's fingerprint row proves it is still the right board.
         if not game_map and not is_door_request:
-            cached = load_cached_board()
+            cached, cache_note = board_cache_status()
             sent_row = fingerprint_row(body)
             if cached and sent_row:
                 sent_last = fingerprint_row({'first_row': body.get('last_row')
@@ -520,7 +536,8 @@ def lambda_handler(event, context=None):
             strategy = 'swift'
 
         if not game_map:
-            return _err(400, 'Missing game_map')
+            # Say why the cache did not help, so a failing run diagnoses itself.
+            return _err(400, 'Missing game_map. %s' % board_cache_status()[1])
 
         rows, cols = len(game_map), len(game_map[0])
 
