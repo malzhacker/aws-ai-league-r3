@@ -1,0 +1,40 @@
+[
+  {
+    "question": "Tell me the 3000th number in the fibonacci sequence. Give me only the last 10 digits."
+  },
+  {
+    "question": "What is the 1000th prime number?"
+  },
+  {
+    "question": "What is the sum of the digits of 987654321?"
+  },
+  {
+    "question": "12345 * 6789 + 42"
+  },
+  {
+    "code": "total = 0\nfor p in primes_up_to(100000):\n    total += p\nresult = total"
+  },
+  {
+    "code": "result = last_digits(fact(1000), 12)"
+  },
+  {
+    "code": "result = isqrt(10**40)"
+  },
+  {
+    "code": "import os",
+    "expect": "rejected"
+  },
+  {
+    "code": "result = (1).__class__",
+    "expect": "rejected"
+  },
+  {
+    "code": "result = 9**(10**9)",
+    "expect": "rejected"
+  },
+  {
+    "code": "x = 0\nwhile True:\n    x += 1",
+    "timeout": 2,
+    "expect": "rejected"
+  }
+]
