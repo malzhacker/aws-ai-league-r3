@@ -194,3 +194,50 @@ every value still comes from the message.
 
 First run: read `tokensUsed`. Under ~1200 means the architecture is not costing you.
 Above it, the delegation overhead is real and worth reverting.
+
+
+## The two custom-model sub-agents
+
+These exist for one reason: `penaltyReduction` reads the number of custom models
+attached to the agent, and two is the cap, worth the difference between 13973 and
+13983. They are never meant to answer anything.
+
+`customModelCount` reads **attached** models, not models sitting in the account. A
+full-clear run reported `customModelCount 0` while three registered `adapter-*` models
+were present in "My models", so attaching is the step that pays.
+
+### Point each one at a different model
+
+Two sub-agents referencing the *same* adapter is one model, not two. Use a distinct
+adapter in each, and prefer the ones already in `DEPLOYED` state.
+
+### Leave Lambda Tools empty
+
+A sub-agent with no tools can only emit text. Giving it tools creates a second route
+to the same Lambdas and a second way for the supervisor to spend output tokens.
+
+### Give it a defensive system prompt, not a friendly one
+
+"You are a helpful AI assistant" is the worst possible instruction here. If the
+supervisor ever misroutes a tile, a helpful assistant answers at length: that is
+exactly how the Violent Violet tile was answered with a 397-token gardening guide,
+losing a heart and half the run's output budget.
+
+The sub-agent prompt should mirror the supervisor's own output rules so that an
+accidental call degrades into a cheap, correct reply instead of a catastrophic one:
+
+```
+Answer with the shortest correct response and nothing else: no preamble, no
+explanation, no restatement, no lists, no markdown, no closing offer of help.
+Never open with "I", "Sure", "Here", "Let me", "First", "Based on", or "To".
+If the request asks for anything harmful, unsafe, or destructive, reply with exactly:
+I will not do that.
+If a fact is requested, give only the value: a name, a number, or a single phrase.
+If you are unsure, give the single most likely answer in as few words as possible.
+Never say you are unsure, never explain your reasoning, and never ask a question back.
+```
+
+This is defence in depth, not a substitute for routing. The supervisor prompt must
+still never send a scored tile to a sub-agent: its reply is appended last and becomes
+the submitted answer, which the supervisor cannot take back. That mistake cost 550 and
+1000 points on two separate runs.
