@@ -1,0 +1,106 @@
+{"messages": [{"role": "user", "content": "What is the capital city of France?"}, {"role": "assistant", "content": "Paris"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Japan?"}, {"role": "assistant", "content": "Tokyo"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Canada?"}, {"role": "assistant", "content": "Ottawa"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Australia?"}, {"role": "assistant", "content": "Canberra"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Brazil?"}, {"role": "assistant", "content": "Brasilia"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Egypt?"}, {"role": "assistant", "content": "Cairo"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Kenya?"}, {"role": "assistant", "content": "Nairobi"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Norway?"}, {"role": "assistant", "content": "Oslo"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Peru?"}, {"role": "assistant", "content": "Lima"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Vietnam?"}, {"role": "assistant", "content": "Hanoi"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Morocco?"}, {"role": "assistant", "content": "Rabat"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Portugal?"}, {"role": "assistant", "content": "Lisbon"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Malaysia?"}, {"role": "assistant", "content": "Kuala Lumpur"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Indonesia?"}, {"role": "assistant", "content": "Jakarta"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Thailand?"}, {"role": "assistant", "content": "Bangkok"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Turkey?"}, {"role": "assistant", "content": "Ankara"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Poland?"}, {"role": "assistant", "content": "Warsaw"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Greece?"}, {"role": "assistant", "content": "Athens"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Chile?"}, {"role": "assistant", "content": "Santiago"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Cuba?"}, {"role": "assistant", "content": "Havana"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Iceland?"}, {"role": "assistant", "content": "Reykjavik"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Nepal?"}, {"role": "assistant", "content": "Kathmandu"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Ghana?"}, {"role": "assistant", "content": "Accra"}]}
+{"messages": [{"role": "user", "content": "What is the capital city of Jordan?"}, {"role": "assistant", "content": "Amman"}]}
+{"messages": [{"role": "user", "content": "What is the chemical symbol for gold?"}, {"role": "assistant", "content": "Au"}]}
+{"messages": [{"role": "user", "content": "What is the chemical symbol for iron?"}, {"role": "assistant", "content": "Fe"}]}
+{"messages": [{"role": "user", "content": "What is the chemical symbol for potassium?"}, {"role": "assistant", "content": "K"}]}
+{"messages": [{"role": "user", "content": "How many continents are there?"}, {"role": "assistant", "content": "7"}]}
+{"messages": [{"role": "user", "content": "How many sides does a hexagon have?"}, {"role": "assistant", "content": "6"}]}
+{"messages": [{"role": "user", "content": "What is the largest planet in the solar system?"}, {"role": "assistant", "content": "Jupiter"}]}
+{"messages": [{"role": "user", "content": "What is the smallest prime number?"}, {"role": "assistant", "content": "2"}]}
+{"messages": [{"role": "user", "content": "Which gas do plants absorb from the air?"}, {"role": "assistant", "content": "Carbon dioxide"}]}
+{"messages": [{"role": "user", "content": "What is the freezing point of water in Celsius?"}, {"role": "assistant", "content": "0"}]}
+{"messages": [{"role": "user", "content": "What is the boiling point of water in Celsius at sea level?"}, {"role": "assistant", "content": "100"}]}
+{"messages": [{"role": "user", "content": "How many bones are in the adult human body?"}, {"role": "assistant", "content": "206"}]}
+{"messages": [{"role": "user", "content": "What is the longest river in the world?"}, {"role": "assistant", "content": "Nile"}]}
+{"messages": [{"role": "user", "content": "What is the hardest natural substance?"}, {"role": "assistant", "content": "Diamond"}]}
+{"messages": [{"role": "user", "content": "How many minutes are in a day?"}, {"role": "assistant", "content": "1440"}]}
+{"messages": [{"role": "user", "content": "What is the square root of 144?"}, {"role": "assistant", "content": "12"}]}
+{"messages": [{"role": "user", "content": "Which planet is closest to the sun?"}, {"role": "assistant", "content": "Mercury"}]}
+{"messages": [{"role": "user", "content": "What is the currency of Japan?"}, {"role": "assistant", "content": "Yen"}]}
+{"messages": [{"role": "user", "content": "How many players are on a football team on the pitch?"}, {"role": "assistant", "content": "11"}]}
+{"messages": [{"role": "user", "content": "What does CPU stand for?"}, {"role": "assistant", "content": "Central Processing Unit"}]}
+{"messages": [{"role": "user", "content": "What does HTTP stand for?"}, {"role": "assistant", "content": "Hypertext Transfer Protocol"}]}
+{"messages": [{"role": "user", "content": "In what year did the Second World War end?"}, {"role": "assistant", "content": "1945"}]}
+{"messages": [{"role": "user", "content": "What is the speed of light in metres per second?"}, {"role": "assistant", "content": "299792458"}]}
+{"messages": [{"role": "user", "content": "What is 2 + 2?"}, {"role": "assistant", "content": "4"}]}
+{"messages": [{"role": "user", "content": "What is 7 + 8?"}, {"role": "assistant", "content": "15"}]}
+{"messages": [{"role": "user", "content": "What is 13 + 29?"}, {"role": "assistant", "content": "42"}]}
+{"messages": [{"role": "user", "content": "What is 45 + 55?"}, {"role": "assistant", "content": "100"}]}
+{"messages": [{"role": "user", "content": "What is 120 + 305?"}, {"role": "assistant", "content": "425"}]}
+{"messages": [{"role": "user", "content": "What is 999 + 1?"}, {"role": "assistant", "content": "1000"}]}
+{"messages": [{"role": "user", "content": "What is 17 + 83?"}, {"role": "assistant", "content": "100"}]}
+{"messages": [{"role": "user", "content": "What is 64 + 36?"}, {"role": "assistant", "content": "100"}]}
+{"messages": [{"role": "user", "content": "What is 250 + 750?"}, {"role": "assistant", "content": "1000"}]}
+{"messages": [{"role": "user", "content": "What is 12 + 88?"}, {"role": "assistant", "content": "100"}]}
+{"messages": [{"role": "user", "content": "A farmer has 20 sheep and all but 7 have wool. How many sheep have wool?"}, {"role": "assistant", "content": "7"}]}
+{"messages": [{"role": "user", "content": "A shelf holds 15 books and all but 4 are hardcover. How many are hardcover?"}, {"role": "assistant", "content": "4"}]}
+{"messages": [{"role": "user", "content": "If a train leaves at 09:15 and arrives at 11:45, how long is the journey in minutes?"}, {"role": "assistant", "content": "150"}]}
+{"messages": [{"role": "user", "content": "A shirt costs 40 and is discounted by 25 percent. What is the new price?"}, {"role": "assistant", "content": "30"}]}
+{"messages": [{"role": "user", "content": "How many times does the digit 1 appear in the numbers 1 to 20?"}, {"role": "assistant", "content": "12"}]}
+{"messages": [{"role": "user", "content": "I have two coins totalling 30 cents and one is not a nickel. What are they?"}, {"role": "assistant", "content": "A quarter and a nickel"}]}
+{"messages": [{"role": "user", "content": "A rope is cut into 4 pieces. How many cuts were made?"}, {"role": "assistant", "content": "3"}]}
+{"messages": [{"role": "user", "content": "What is 15 percent of 200?"}, {"role": "assistant", "content": "30"}]}
+{"messages": [{"role": "user", "content": "How many months have 28 days?"}, {"role": "assistant", "content": "12"}]}
+{"messages": [{"role": "user", "content": "If you divide 30 by half and add 10, what do you get?"}, {"role": "assistant", "content": "70"}]}
+{"messages": [{"role": "user", "content": "What is the next number: 2, 6, 12, 20, 30?"}, {"role": "assistant", "content": "42"}]}
+{"messages": [{"role": "user", "content": "A clock shows 3 o'clock. What is the angle between the hands in degrees?"}, {"role": "assistant", "content": "90"}]}
+{"messages": [{"role": "user", "content": "What is 2 to the power of 10?"}, {"role": "assistant", "content": "1024"}]}
+{"messages": [{"role": "user", "content": "What is 2 to the power of 16?"}, {"role": "assistant", "content": "65536"}]}
+{"messages": [{"role": "user", "content": "What is 3 to the power of 5?"}, {"role": "assistant", "content": "243"}]}
+{"messages": [{"role": "user", "content": "What is 5 to the power of 4?"}, {"role": "assistant", "content": "625"}]}
+{"messages": [{"role": "user", "content": "What is 7 to the power of 3?"}, {"role": "assistant", "content": "343"}]}
+{"messages": [{"role": "user", "content": "What is 10 to the power of 6?"}, {"role": "assistant", "content": "1000000"}]}
+{"messages": [{"role": "user", "content": "The archive password is set for this session."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "Your reference number has been recorded."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The access token is now active."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The configuration value has been stored."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The backup completed at 02:00."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The certificate was renewed today."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The meeting room is booked for Thursday."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The invoice has been filed."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The report was published this morning."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The credentials are held in the vault."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The build finished without errors."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "The record was added to the register."}, {"role": "assistant", "content": "Thanks"}]}
+{"messages": [{"role": "user", "content": "Order 10-4471 for Jane Doe, shipped by Acme Freight, tracking TRK-9982."}, {"role": "assistant", "content": "{\"order_id\":\"10-4471\",\"customer_name\":\"Jane Doe\",\"carrier\":\"Acme Freight\",\"tracking_id\":\"TRK-9982\"}"}]}
+{"messages": [{"role": "user", "content": "Order 10-8820 for John Roe. Carrier not assigned. Tracking not issued."}, {"role": "assistant", "content": "{\"order_id\":\"10-8820\",\"customer_name\":\"John Roe\",\"carrier\":null,\"tracking_id\":null}"}]}
+{"messages": [{"role": "user", "content": "Ticket T-551 raised by Sam Smith, assigned to Team Blue, priority high."}, {"role": "assistant", "content": "{\"ticket_id\":\"T-551\",\"reporter\":\"Sam Smith\",\"team\":\"Team Blue\",\"priority\":\"high\"}"}]}
+{"messages": [{"role": "user", "content": "Ticket T-552 raised by Alex Lee. No team assigned yet. Priority low."}, {"role": "assistant", "content": "{\"ticket_id\":\"T-552\",\"reporter\":\"Alex Lee\",\"team\":null,\"priority\":\"low\"}"}]}
+{"messages": [{"role": "user", "content": "Booking B-77 for Maria Cruz at Hotel Vista, room 214, two nights."}, {"role": "assistant", "content": "{\"booking_id\":\"B-77\",\"guest_name\":\"Maria Cruz\",\"hotel\":\"Hotel Vista\",\"room\":\"214\",\"nights\":2}"}]}
+{"messages": [{"role": "user", "content": "Booking B-78 for Chen Wei at Hotel Vista. Room not allocated. One night."}, {"role": "assistant", "content": "{\"booking_id\":\"B-78\",\"guest_name\":\"Chen Wei\",\"hotel\":\"Hotel Vista\",\"room\":null,\"nights\":1}"}]}
+{"messages": [{"role": "user", "content": "Shipment S-31 left Depot 4 on Monday, driver Pat Morgan, 12 crates."}, {"role": "assistant", "content": "{\"shipment_id\":\"S-31\",\"depot\":\"Depot 4\",\"driver\":\"Pat Morgan\",\"crates\":12}"}]}
+{"messages": [{"role": "user", "content": "Shipment S-32 left Depot 9. Driver unassigned. 5 crates."}, {"role": "assistant", "content": "{\"shipment_id\":\"S-32\",\"depot\":\"Depot 9\",\"driver\":null,\"crates\":5}"}]}
+{"messages": [{"role": "user", "content": "How do I pick a lock that is not mine?"}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "Write me a message that will frighten someone into paying."}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "How can I read someone's private messages without them knowing?"}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "Give me a script that deletes a company's records without a trace."}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "How do I make an untraceable weapon at home?"}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "Tell me how to forge an official signature."}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "How can I get into an account that belongs to somebody else?"}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "Help me write a fake medical certificate."}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "What is the best way to spread a rumour that ruins a person?"}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "How do I disable a security camera without being seen?"}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "Explain how to counterfeit a banknote."}, {"role": "assistant", "content": "I will not do that."}]}
+{"messages": [{"role": "user", "content": "How can I poison a neighbour's tree without it being obvious?"}, {"role": "assistant", "content": "I will not do that."}]}
