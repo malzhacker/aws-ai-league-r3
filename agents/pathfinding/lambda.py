@@ -116,6 +116,74 @@ def _looks_like_grid(value):
     )
 
 
+# Compact grid encoding. The verbose list-of-lists costs the supervisor 518 output
+# tokens to relay; the same board as comma-separated row strings costs 271, and is
+# 284 characters to emit instead of 777, so there is less to mistype rather than
+# more. The legend is only a default and can be replaced per request, so no board
+# vocabulary is fixed in this file.
+DEFAULT_LEGEND = {".": "normal", "#": "wall", "T": "treasure"}
+ROW_SEPARATORS = "\n;/|"
+
+
+def parse_legend(raw):
+    """Read a legend such as ".=normal, #=wall, T=treasure" or a dict."""
+    legend = dict(DEFAULT_LEGEND)
+    if not raw:
+        return legend
+    if isinstance(raw, dict):
+        legend.update({str(k): str(v) for k, v in raw.items()})
+        return legend
+    text = str(raw)
+    if text.strip()[:1] == "{":
+        try:
+            return parse_legend(json.loads(text))
+        except ValueError:
+            pass
+    for pair in re.split(r"[,;\n]", text):
+        piece = pair.split("=", 1)
+        if len(piece) == 2 and piece[0].strip():
+            legend[piece[0].strip()] = piece[1].strip()
+    return legend
+
+
+def expand_compact_grid(value, legend=None):
+    """Turn compact row strings into the list-of-lists the solver expects.
+
+    Accepts a list of row strings, or one string whose rows are separated by a
+    newline, semicolon, slash or pipe. Returns None when the value is not a
+    compact grid, so a caller can fall through to the verbose form untouched.
+    """
+    legend = legend or dict(DEFAULT_LEGEND)
+
+    if isinstance(value, str):
+        rows = [part for part in re.split("[" + re.escape(ROW_SEPARATORS) + "]", value)
+                if part.strip()]
+    elif isinstance(value, (list, tuple)) and value and all(isinstance(r, str) for r in value):
+        rows = [r for r in value if r.strip()]
+    else:
+        return None
+
+    if len(rows) < 2:
+        return None
+
+    grid = []
+    for row in rows:
+        cells = [cell.strip() for cell in row.split(",")]
+        if len(cells) < 2 or any(cell == "" for cell in cells):
+            return None
+        grid.append([legend.get(cell, cell) for cell in cells])
+
+    width = len(grid[0])
+    if any(len(row) != width for row in grid):
+        # Ragged input is a transcription error, not a format to guess at. Refusing
+        # here surfaces it as a clear failure instead of silently routing off-board.
+        raise ValueError(
+            "compact grid is ragged: rows have widths %s. Every row must list the "
+            "same number of comma-separated cells."
+            % ", ".join(str(len(row)) for row in grid))
+    return grid
+
+
 def _grid_from_string(text):
     """Pull a nested list-of-strings literal out of a prompt string."""
     depth, start = 0, None
@@ -213,9 +281,15 @@ def parse_event(event):
     options = flatten_options(event)
 
     grid = None
+    legend = parse_legend(options.get("legend") or os.environ.get("GRID_LEGEND"))
     for key in ("map", "grid", "tiles", "board", "dungeon"):
-        if _looks_like_grid(options.get(key)):
-            grid = options[key]
+        value = options.get(key)
+        if _looks_like_grid(value):
+            grid = value
+            break
+        compact = expand_compact_grid(value, legend)
+        if compact:
+            grid = compact
             break
     if grid is None and grids:
         grid = grids[0]

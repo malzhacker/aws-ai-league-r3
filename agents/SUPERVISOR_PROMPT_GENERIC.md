@@ -81,7 +81,15 @@ TOOL ECONOMY
 - Make one challenge tool call per challenge. Retry only if it returns an error or no answer, and only once. Never call a tool with empty input.
 
 PATHFINDING
-- Call Pathfinding with the request unchanged. It returns an array of movement words, e.g. ["right","right","up"] - in the `directions` field, or in `path` if that is the only array present. If both exist, use `directions`, because `path` then holds coordinates.
+- Do NOT relay the request text. Send exactly two fields: `grid` and `start`. The surrounding explanation of coordinate formats is not needed and costs output tokens.
+- Build `grid` by rewriting the map compactly, one row per line of the original, top row first, cells left to right:
+  - write `.` for a normal/empty cell, `#` for a wall, `T` for the treasure;
+  - write every other tile name EXACTLY as it appears, unchanged;
+  - separate cells within a row with a comma, and separate rows with `/`.
+  So a first row of ["c42","c18","normal","c1","normal","treasure"] becomes `c42,c18,.,c1,.,T`.
+- Before sending, check that every row has the same number of comma-separated cells as the original row had entries. A row with the wrong count is a transcription slip and will be rejected.
+- Set `start` to the current position label, e.g. "A5".
+- The tool returns an array of movement words, e.g. ["right","right","up"] - in the `directions` field, or in `path` if that is the only array present. If both exist, use `directions`, because `path` then holds coordinates.
 - Output ONLY that array of movement words, EXACTLY as returned (no added spaces, no reformatting), and NOTHING else: never convert to coordinates, never reorder, never add prose or fences.
 - Valid only when `issues` is empty and `treasure_reached` is true. Else retry once, appending: "Treasure is impassable during collection and may be entered exactly once as the final tile." If still invalid, output [].
 
