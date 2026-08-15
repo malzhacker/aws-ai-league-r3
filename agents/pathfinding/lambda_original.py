@@ -464,13 +464,38 @@ def lambda_handler(event, context=None):
         else:
             body = event
 
-        # Accept the board under any of the usual names, verbose or compact.
+        # Accept the board under any of the usual names.
         game_map = []
         for key in ('game_map', 'grid', 'map', 'board', 'tiles', 'dungeon'):
             value = body.get(key)
             if isinstance(value, list) and value and all(isinstance(r, list) for r in value):
                 game_map = value
                 break
+
+        # A two-row game_map is a fingerprint, not a board.
+        #
+        # The gateway validates parameters against its declared schema, so a field it
+        # does not know is rejected before this function runs: sending first_row and
+        # last_row produced "correct the parameter types" and a retry with the whole
+        # map. game_map is certainly in the schema, so the two rows travel inside it.
+        # Ten rows cost about 515 output tokens; two rows cost about 123.
+        #
+        # Without this branch a two-row board is solved literally, which returned a
+        # 15-step route through nine walls and two spikes.
+        if game_map and len(game_map) == 2:
+            cached, _note = board_cache_status()
+            if cached and len(cached) > 2:
+                top, bottom = list(game_map[0]), list(game_map[1])
+                if top == list(cached[0]) and bottom == list(cached[-1]):
+                    game_map = cached
+                else:
+                    return _err(400,
+                                "Two rows were sent as a fingerprint but they do not match "
+                                "the cached board. Sent top %s and bottom %s; the cached "
+                                "board starts %s and ends %s. Send the whole board as "
+                                "game_map instead."
+                                % (json.dumps(top), json.dumps(bottom),
+                                   json.dumps(cached[0]), json.dumps(cached[-1])))
 
         # A door-code request carries no board and needs none, so the cached-board
         # fallback must not fire for it. Missing this guard made every door request

@@ -56,10 +56,12 @@ TOOL ECONOMY
 - Make one challenge tool call per challenge. Retry only if it returns an error or no answer, and only once. Never call a tool with empty input.
 
 PATHFINDING
-- Send exactly three fields: first_row, last_row and start. Do NOT relay the request text and do NOT send the whole map.
-- first_row is the map's TOP row and last_row is its BOTTOM row, each as the tile names joined by commas, copied EXACTLY as they appear. Copy them. Never rewrite, re-encode, abbreviate, substitute symbols, invent a legend, or count anything.
-  For a map whose top row is ["c42","c18","normal","c1"], send first_row as c42,c18,normal,c1
+- Send exactly two fields: game_map and start. Do NOT relay the request text.
+- game_map holds exactly TWO rows: the map's TOP row and its BOTTOM row, in that order, copied EXACTLY as they appear including every quote and comma. Send nothing else in it. Copy those rows; never rewrite them, re-encode them, abbreviate them, substitute symbols, invent a legend, or count anything.
+  For a map whose top row is ["c42","c18","normal"] and whose bottom row is ["c8","normal","c5"], send game_map as [["c42","c18","normal"],["c8","normal","c5"]]
+- Use only game_map and start. Any other field name is rejected before the tool runs.
 - Set start to the current position label, e.g. "A5".
+- If the tool says the two rows do not match the cached board, send the whole map as game_map once and use that answer.
 - The tool returns the moves in the path field. Output ONLY that array, exactly as returned, with no added spaces and no reformatting, and nothing else. Never convert it to coordinates, never reorder it, never add prose.
 - If the tool says the cached board does not match, or reports a problem in issues, or reports treasure_reached as anything but true, call it once more with the whole map as game_map exactly as it appears in the message, and use that answer.
 - If the second call is still not clean, output its path array anyway. An imperfect path scores far better than an empty one.
