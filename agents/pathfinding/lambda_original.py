@@ -26,26 +26,6 @@ DOOR_HINTS = {
 }
 
 # --------------------------------------------------------------------------- #
-# Compact grid input.
-#
-# Relaying the board as a list of lists costs the supervisor 532 output tokens.
-# The same board as comma-separated row strings costs 251, and is 284 characters
-# to type instead of 777, so there is less to mistype rather than more. Output
-# tokens are the only cost term in the score, so this is worth 6 points.
-#
-# The legend is a default, not a fixed vocabulary: it can be replaced per request
-# or through GRID_LEGEND, so the compact form works on any board.
-# --------------------------------------------------------------------------- #
-
-DEFAULT_LEGEND = {".": "normal", "#": "wall", "T": "treasure"}
-# Built with chr(10) rather than an escape. A literal backslash-n in a string does
-# not survive every paste into a console editor: one turned into a real line break
-# and left a sibling file with an unterminated string literal at import time.
-NEWLINE = chr(10)
-ROW_SEPARATORS = NEWLINE + ";/|"
-DEFAULT_STRATEGY = os.environ.get("STRATEGY", "collect_all")
-
-# --------------------------------------------------------------------------- #
 # Cached board.
 #
 # Relaying the board costs the supervisor about 515 output tokens, and output
@@ -62,6 +42,10 @@ DEFAULT_STRATEGY = os.environ.get("STRATEGY", "collect_all")
 # Set BOARD to the board as a JSON array of arrays. Leave it unset and everything
 # behaves exactly as before.
 # --------------------------------------------------------------------------- #
+
+NEWLINE = chr(10)
+DEFAULT_STRATEGY = os.environ.get("STRATEGY", "collect_all")
+
 
 def load_cached_board():
     raw = os.environ.get("BOARD")
@@ -90,77 +74,6 @@ def fingerprint_row(body):
             if len(parts) > 1:
                 return parts
     return None
-
-
-def parse_legend(raw):
-    legend = dict(DEFAULT_LEGEND)
-    if not raw:
-        return legend
-    if isinstance(raw, dict):
-        legend.update({str(k): str(v) for k, v in raw.items()})
-        return legend
-    text = str(raw)
-    if text.strip()[:1] == "{":
-        try:
-            return parse_legend(json.loads(text))
-        except ValueError:
-            pass
-    for pair in re.split("[,;" + NEWLINE + "]", text):
-        piece = pair.split("=", 1)
-        if len(piece) == 2 and piece[0].strip():
-            legend[piece[0].strip()] = piece[1].strip()
-    return legend
-
-
-def expand_compact_grid(value, legend=None):
-    """Turn compact row strings into the list of lists the solver expects.
-
-    Accepts a list of row strings, or one string whose rows are separated by a
-    newline, semicolon, slash or pipe. Returns None when the value is not a
-    compact grid, so the caller falls through to the verbose form untouched.
-    """
-    legend = legend or dict(DEFAULT_LEGEND)
-    if isinstance(value, str):
-        rows = [p for p in re.split("[" + re.escape(ROW_SEPARATORS) + "]", value) if p.strip()]
-    elif isinstance(value, (list, tuple)) and value and all(isinstance(r, str) for r in value):
-        rows = [r for r in value if r.strip()]
-    else:
-        return None
-    if len(rows) < 2:
-        return None
-
-    grid = []
-    commas = any("," in row for row in rows)
-    for row in rows:
-        if commas:
-            cells = [cell.strip() for cell in row.split(",")]
-        else:
-            # No commas: every character is one cell. This is the cheapest form to
-            # relay, because a full single-character legend lives in GRID_LEGEND on
-            # the function and therefore costs zero output tokens. A 10x10 board
-            # becomes ten 10-character rows.
-            cells = list(row.strip())
-        if len(cells) < 2 or any(cell == "" for cell in cells):
-            return None
-        if not commas:
-            # In single-character mode an unmapped letter would be accepted as an
-            # unknown tile and silently treated as walkable. An incomplete legend is
-            # a transcription slip, so say so instead of routing on a wrong board.
-            missing = sorted({c for c in cells if c not in legend})
-            if missing:
-                raise ValueError(
-                    "legend is missing an entry for %s. Every character in the grid "
-                    "must appear in the legend, for example %s=normal."
-                    % (", ".join(repr(m) for m in missing), missing[0]))
-        grid.append([legend.get(cell, cell) for cell in cells])
-
-    width = len(grid[0])
-    if any(len(r) != width for r in grid):
-        raise ValueError(
-            "compact grid is ragged: rows have widths %s. Every row must list the "
-            "same number of comma-separated cells."
-            % ", ".join(str(len(r)) for r in grid))
-    return grid
 
 
 def door_unlock_code(challenge_id, key):
@@ -496,16 +409,11 @@ def lambda_handler(event, context=None):
             body = event
 
         # Accept the board under any of the usual names, verbose or compact.
-        legend = parse_legend(body.get('legend') or os.environ.get('GRID_LEGEND'))
         game_map = []
         for key in ('game_map', 'grid', 'map', 'board', 'tiles', 'dungeon'):
             value = body.get(key)
             if isinstance(value, list) and value and all(isinstance(r, list) for r in value):
                 game_map = value
-                break
-            compact = expand_compact_grid(value, legend)
-            if compact:
-                game_map = compact
                 break
 
         # A door-code request carries no board and needs none, so the cached-board
