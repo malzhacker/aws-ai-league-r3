@@ -720,13 +720,21 @@ def solve(event):
         door = str(door).strip().lower()
         key_value = str(key_value).strip()
 
-        rules = parse_door_rules(fields.get("door_rules") or os.environ.get("DOOR_RULES"))
-        rule = rules.get(door)
+        # The challenge's own wording wins over any configured table.
+        #
+        # This order matters on the evaluation map. That board is the same shape as the
+        # practice board but its questions differ, so a rule remembered from practice
+        # can be wrong there. A rule stated in the question is ground truth for the
+        # challenge in front of you; a configured rule is only a memory of a different
+        # one. Getting this backwards returns a confidently wrong code, and a wrong door
+        # code costs five hearts.
+        blob = " ".join(str(v) for k, v in fields.items()
+                        if isinstance(v, str) and k not in ("key", "secret", "value"))
+        rule = rule_from_text(blob)
         if rule is None:
-            # any text in the request may carry the door's stated rule
-            blob = " ".join(str(v) for k, v in fields.items()
-                            if isinstance(v, str) and k not in ("key", "secret", "value"))
-            rule = rule_from_text(blob)
+            rules = parse_door_rules(fields.get("door_rules")
+                                     or os.environ.get("DOOR_RULES"))
+            rule = rules.get(door)
         if rule is None:
             return {
                 "answer": "",
