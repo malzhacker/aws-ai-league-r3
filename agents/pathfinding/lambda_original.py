@@ -1,24 +1,20 @@
 """Pathfinding handler for the AWS AI League dungeon agent.
 
-The tile taxonomy is hardcoded, so hazards are avoided with no configuration: c8 and
-trap are never stepped on, and a door is impassable until its key is held.
+The first full runtime map is validated, solved, and registered under a derived
+content ID. Later warm invocations can send that ID, the current top/bottom
+fingerprint rows, and the start position. No board is embedded in this file, and a
+missing or boundary-mismatched cache entry fails explicitly instead of routing on a
+guessed default board.
 
-Two things it does that the score depends on:
-
-  * The board can be cached in the BOARD environment variable, so the supervisor
-    sends two fingerprint rows instead of five hundred tokens of map. Relaying the
-    board is the single largest output cost in a run.
-  * It reports "issues" and "treasure_reached", which the supervisor prompt gates on
-    before submitting a route.
-
-A ragged row is refused rather than padded. Padding one silently solves a board that
-does not exist, which is far more expensive than a clear error.
+The handler also reports ``issues`` and ``treasure_reached`` so the supervisor can
+refuse an unsafe route. Ragged or malformed maps are rejected rather than repaired.
 """
 
+import hashlib
 import json
 import os
 import re
-from collections import deque
+from collections import OrderedDict, deque
 
 CELL_POINTS = {"c7": 250}
 COLLECTIBLE_COINS = {"c7"}
@@ -34,102 +30,143 @@ DOOR_HINTS = {
 }
 
 # --------------------------------------------------------------------------- #
-# Cached board.
+# Runtime board cache.
 #
-# Relaying the board costs the supervisor about 515 output tokens, and output
-# tokens are the only cost term in the score. The board itself is stable across
-# runs; what varies between runs is the questions on each tile. So the board can
-# live here in configuration, where it costs nothing, and the supervisor sends only
-# the first row as a fingerprint.
-#
-# The fingerprint is what makes this safe. Copying one row is something the model
-# does reliably, unlike re-encoding a hundred cells, which failed outright. If the
-# row does not match the cached board, this refuses and asks for the full map
-# rather than routing on a board that is no longer true.
-#
-# Set BOARD to the board as a JSON array of arrays. Leave it unset and everything
-# behaves exactly as before.
+# A full map registers itself automatically. Its ID is derived from canonical map
+# content, so a caller cannot choose an ID and poison another entry. The cache is
+# deliberately bounded and contains no fallback board. Lambda process memory is
+# best-effort: a cold execution environment returns ``cache_miss`` and asks for the
+# full map again rather than solving a guessed board.
 # --------------------------------------------------------------------------- #
 
 NEWLINE = chr(10)
 DEFAULT_STRATEGY = os.environ.get("STRATEGY", "collect_all")
-
-# The board, in code rather than in configuration.
-#
-# The BOARD environment variable is the cleaner home for this, but a workshop role
-# is denied lambda:UpdateFunctionConfiguration, so environment variables cannot be
-# set at all. Code updates use a different permission, so the value lives here.
-#
-# The environment variable still wins when it is available, so nothing has to change
-# if this ever moves to an account that allows it.
-#
-# Replace this if the board changes. The fingerprint check below means a stale value
-# fails loudly with the row it disagreed on, rather than routing on a wrong board.
-BOARD_IN_CODE = [
-    ["c42", "c18", "normal", "normal", "c1", "normal", "c7", "normal", "normal", "treasure"],
-    ["c4", "normal", "normal", "c2", "wall", "normal", "normal", "normal", "normal", "normal"],
-    ["normal", "normal", "normal", "normal", "wall", "c43", "normal", "normal", "normal", "normal"],
-    ["wall", "wall", "wall", "c5", "wall", "wall", "c8", "wall", "wall", "c33"],
-    ["normal", "normal", "normal", "normal", "c8", "normal", "normal", "normal", "normal", "normal"],
-    ["wall", "wall", "wall", "c8", "wall", "wall", "wall", "wall", "wall", "c32"],
-    ["c8", "normal", "normal", "normal", "wall", "c7", "c7", "c7", "c7", "c1"],
-    ["c2", "normal", "normal", "c4", "wall", "c17", "c7", "c7", "c7", "c7"],
-    ["normal", "normal", "normal", "normal", "wall", "wall", "wall", "wall", "wall", "normal"],
-    ["c8", "normal", "normal", "c18", "c5", "c7", "c7", "c7", "c7", "c7"],
-]
+CACHE_ID_PREFIX = "b1-"
+MAX_CACHED_BOARDS = max(1, min(64, int(os.environ.get("MAX_CACHED_BOARDS", "8"))))
+MAX_BOARD_ROWS = 100
+MAX_BOARD_COLS = 100
+MAX_BOARD_CELLS = 10000
+MAX_CELL_CHARS = 128
+BOARD_CACHE = OrderedDict()
 
 
-def board_cache_status():
-    """Return (board, explanation). The explanation is surfaced in errors.
+def _validate_board(value):
+    """Return a defensive board copy or raise ValueError with a useful reason."""
+    if not isinstance(value, list) or not value:
+        raise ValueError("game_map must be a non-empty array of rows")
+    if len(value) > MAX_BOARD_ROWS:
+        raise ValueError("game_map has too many rows")
 
-    A malformed BOARD used to look identical to an unset one, which is unhelpful
-    when the caller cannot invoke this function directly to inspect it. Now the
-    reason travels back in the error message.
-    """
-    raw = os.environ.get("BOARD")
-    if not raw or not raw.strip():
-        # No variable, so use the value compiled into this file.
-        board = BOARD_IN_CODE
-        if not (isinstance(board, list) and board
-                and all(isinstance(row, list) and row for row in board)
-                and all(isinstance(cell, str) for row in board for cell in row)
-                and len({len(row) for row in board}) == 1):
-            return None, "BOARD is not set and BOARD_IN_CODE is empty or malformed"
-        return board, ("BOARD_IN_CODE loaded: %d rows of %d"
-                       % (len(board), len(board[0])))
-    try:
-        board = json.loads(raw)
-    except ValueError as exc:
-        return None, ("BOARD is set (%d characters) but is not valid JSON: %s. It must "
-                      "be one line, an array of arrays of quoted tile names."
-                      % (len(raw), exc))
-    if not (isinstance(board, list) and board
-            and all(isinstance(row, list) and row for row in board)):
-        return None, "BOARD parsed but is not a non-empty array of non-empty arrays"
-    if not all(isinstance(cell, str) for row in board for cell in row):
-        return None, "BOARD contains a non-string cell; every tile name must be quoted"
-    widths = sorted({len(row) for row in board})
-    if len(widths) > 1:
-        return None, ("BOARD is ragged: row widths are %s. Every row must have the same "
-                      "number of cells." % ", ".join(str(w) for w in widths))
-    return board, "BOARD loaded: %d rows of %d" % (len(board), widths[0])
+    board = []
+    width = None
+    for row_index, row in enumerate(value):
+        if not isinstance(row, list) or not row:
+            raise ValueError("game_map row %d must be a non-empty array" % row_index)
+        if width is None:
+            width = len(row)
+            if width > MAX_BOARD_COLS:
+                raise ValueError("game_map has too many columns")
+        elif len(row) != width:
+            raise ValueError(
+                "Ragged map: rows have widths %s. Every row must have the same "
+                "number of cells; re-send the short row without padding."
+                % ", ".join(str(v) for v in sorted({width, len(row)})))
+        clean_row = []
+        for col_index, cell in enumerate(row):
+            if not isinstance(cell, str):
+                raise ValueError(
+                    "game_map cell (%d,%d) must be a string" % (row_index, col_index))
+            if not cell or len(cell) > MAX_CELL_CHARS:
+                raise ValueError(
+                    "game_map cell (%d,%d) has an invalid length" % (row_index, col_index))
+            clean_row.append(cell)
+        board.append(clean_row)
 
-
-def load_cached_board():
-    return board_cache_status()[0]
+    if len(board) * width > MAX_BOARD_CELLS:
+        raise ValueError("game_map has too many cells")
+    return board
 
 
-def fingerprint_row(body):
-    """The row the caller sent for verification, in any reasonable spelling."""
-    for key in ('first_row', 'firstrow', 'row0', 'row_0', 'fingerprint', 'verify_row'):
-        value = body.get(key)
-        if isinstance(value, list) and value and all(isinstance(c, str) for c in value):
-            return value
-        if isinstance(value, str) and value.strip():
-            parts = [p.strip().strip('"\'') for p in value.split(',')]
-            if len(parts) > 1:
-                return parts
+def _canonical_board(board):
+    return json.dumps(board, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _cache_id_for(canonical):
+    """Return a globally deterministic 128-bit content address."""
+    return CACHE_ID_PREFIX + hashlib.sha256(canonical).hexdigest()[:32]
+
+
+def register_board(value):
+    board = _validate_board(value)
+    canonical = _canonical_board(board)
+    cache_id = _cache_id_for(canonical)
+    existing = BOARD_CACHE.get(cache_id)
+    if existing is not None and _canonical_board(existing) != canonical:
+        raise ValueError("board cache hash collision")
+    BOARD_CACHE[cache_id] = tuple(tuple(row) for row in board)
+    BOARD_CACHE.move_to_end(cache_id)
+    while len(BOARD_CACHE) > MAX_CACHED_BOARDS:
+        BOARD_CACHE.popitem(last=False)
+    return cache_id, [row[:] for row in board]
+
+
+def get_cached_board(cache_id):
+    if not isinstance(cache_id, str):
+        return None
+    cache_id = cache_id.strip().lower()
+    if not re.fullmatch(r"b1-[0-9a-f]{32}", cache_id):
+        return None
+    stored = BOARD_CACHE.get(cache_id)
+    if stored is None:
+        return None
+    BOARD_CACHE.move_to_end(cache_id)
+    return [list(row) for row in stored]
+
+
+def _row_fingerprint(value):
+    if isinstance(value, list) and value and all(isinstance(cell, str) for cell in value):
+        return list(value)
+    if isinstance(value, str) and value.strip():
+        parts = [part.strip().strip('"\'') for part in value.split(',')]
+        if len(parts) > 1 and all(parts):
+            return parts
     return None
+
+
+def _cache_reference(body, game_map):
+    """Return (ID, top row, bottom row) from fields or a map-shaped envelope.
+
+    The envelope keeps the deployed ``game_map`` schema: two rows, each prefixed
+    with the same cache ID. The remaining cells are copied top/bottom fingerprints
+    from the current challenge, preventing an old remembered ID from silently
+    selecting a different cached board whose boundary changed.
+    """
+    declared = None
+    for key in ("cache_id", "board_id", "board_cache_id"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            declared = value.strip().lower()
+            break
+    if declared:
+        return (declared, _row_fingerprint(body.get("first_row")),
+                _row_fingerprint(body.get("last_row")))
+
+    if (isinstance(game_map, list) and len(game_map) == 2
+            and all(isinstance(row, list) and len(row) >= 2 for row in game_map)
+            and all(isinstance(cell, str) for row in game_map for cell in row)):
+        first_id = game_map[0][0].strip().lower()
+        last_id = game_map[1][0].strip().lower()
+        if first_id == last_id and first_id.startswith(CACHE_ID_PREFIX):
+            return first_id, list(game_map[0][1:]), list(game_map[1][1:])
+    return None, None, None
+
+
+def _cache_retry(reason, cache_id):
+    payload = {"error": reason, "cache_id": cache_id, "needs_game_map": True}
+    # Keep HTTP 200 so AgentCore surfaces the retry payload instead of replacing a
+    # non-2xx response with a generic tool failure.
+    return {"statusCode": 200,
+            "body": json.dumps(payload, separators=(",", ":"))}
 
 
 def door_unlock_code(challenge_id, key):
@@ -475,107 +512,67 @@ def collect_all_path(game_map, rows, cols, start, treasure, keys=None, blocked=N
 
 def lambda_handler(event, context=None):
     try:
+        if not isinstance(event, dict):
+            return _err(400, "Event must be a JSON object")
         if 'body' in event:
             body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
         else:
             body = event
+        if not isinstance(body, dict):
+            return _err(400, "Request body must be a JSON object")
 
-        # Accept the board under any of the usual names.
-        game_map = []
-        for key in ('game_map', 'grid', 'map', 'board', 'tiles', 'dungeon'):
-            value = body.get(key)
-            if isinstance(value, list) and value and all(isinstance(r, list) for r in value):
-                game_map = value
-                break
-
-        # A two-row game_map is a fingerprint, not a board.
-        #
-        # The gateway validates parameters against its declared schema, so a field it
-        # does not know is rejected before this function runs: sending first_row and
-        # last_row produced "correct the parameter types" and a retry with the whole
-        # map. game_map is certainly in the schema, so the two rows travel inside it.
-        # Ten rows cost about 515 output tokens; two rows cost about 123.
-        #
-        # Without this branch a two-row board is solved literally, which returned a
-        # 15-step route through nine walls and two spikes.
-        if game_map and len(game_map) in (1, 2):
-            cached, _note = board_cache_status()
-            if cached and len(cached) > 2:
-                top = list(game_map[0])
-                bottom = list(game_map[1]) if len(game_map) == 2 else list(cached[-1])
-                if top == list(cached[0]) and bottom == list(cached[-1]):
-                    game_map = cached
-                else:
-                    return _err(400,
-                                "Two rows were sent as a fingerprint but they do not match "
-                                "the cached board. Sent top %s and bottom %s; the cached "
-                                "board starts %s and ends %s. Send the whole board as "
-                                "game_map instead."
-                                % (json.dumps(top), json.dumps(bottom),
-                                   json.dumps(cached[0]), json.dumps(cached[-1])))
-
-        # A door-code request carries no board and needs none, so the cached-board
-        # fallback must not fire for it. Missing this guard made every door request
-        # fail the moment BOARD was configured.
+        # A door-code request carries no board and needs none.
         is_door_request = bool(body.get('door_code') or body.get('door')
                                or body.get('door_id') or body.get('challenge_id')
                                or body.get('door_type'))
 
-        # No board in the payload? Fall back to the cached one, but only after the
-        # caller's fingerprint row proves it is still the right board.
-        if not game_map and not is_door_request:
-            cached, cache_note = board_cache_status()
-            sent_row = fingerprint_row(body)
-            if cached and sent_row:
-                sent_last = fingerprint_row({'first_row': body.get('last_row')
-                                                          or body.get('lastrow')})
-                if list(sent_row) != list(cached[0]):
-                    return _err(400,
-                                "Cached board does not match. Row 0 sent was %s but the "
-                                "cached board starts %s. Send the whole board as game_map "
-                                "instead." % (json.dumps(sent_row), json.dumps(cached[0])))
-                if sent_last and list(sent_last) != list(cached[-1]):
-                    # Checking both ends costs the caller about 40 tokens and makes a
-                    # stale middle far less likely to slip through unnoticed.
-                    return _err(400,
-                                "Cached board does not match. Last row sent was %s but the "
-                                "cached board ends %s. Send the whole board as game_map "
-                                "instead." % (json.dumps(sent_last), json.dumps(cached[-1])))
-                game_map = cached
-            elif cached and not sent_row:
-                return _err(400,
-                            "A cached board is configured but no fingerprint row was sent. "
-                            "Send first_row as the board's top row, copied exactly, or send "
-                            "the whole board as game_map.")
+        # A full runtime board always wins and registers itself automatically. A
+        # later request may use cache_id plus boundary rows, or a two-row
+        # [[ID,...top],[ID,...bottom]] envelope inside game_map when the deployed
+        # Gateway schema exposes only the existing map field.
+        raw_map = None
+        for key in ('game_map', 'grid', 'map', 'board', 'tiles', 'dungeon'):
+            if key in body and body.get(key) not in (None, []):
+                raw_map = body.get(key)
+                break
 
-        if (not game_map and not body.get('door_code') and not body.get('door')
-                and not body.get('door_id') and not body.get('challenge_id')
-                and re.search(
+        cache_id, sent_top, sent_bottom = _cache_reference(body, raw_map)
+        map_is_cache_envelope = bool(
+            cache_id and isinstance(raw_map, list) and len(raw_map) == 2
+            and all(isinstance(row, list) and row for row in raw_map)
+            and all(str(row[0]).strip().lower() == cache_id for row in raw_map))
+        game_map = []
+        cache_status = None
+
+        if raw_map is not None and not map_is_cache_envelope:
+            try:
+                cache_id, game_map = register_board(raw_map)
+            except ValueError as exc:
+                return _err(400, str(exc))
+            cache_status = 'registered'
+        elif cache_id and not is_door_request:
+            game_map = get_cached_board(cache_id)
+            if game_map is None:
+                return _cache_retry('cache_miss', cache_id)
+            if sent_top is None or sent_bottom is None:
+                return _cache_retry('cache_signature_required', cache_id)
+            if sent_top != game_map[0] or sent_bottom != game_map[-1]:
+                return _cache_retry('cache_mismatch', cache_id)
+            cache_status = 'hit'
+
+        if (not game_map and not is_door_request and re.search(
                 r"\b(fibonacci|factorial|modulo|prime|add|multiply|divide|digit|"
                 r"calculate|compute|what\s+is|door|key)\b", str(body), re.I)):
             return _err(400, "This looks like a math, code, or door question. "
                              "Call the MathSolver tool instead - Pathfinding cannot "
                              "compute it.")
 
-        # A ragged row is a transcription slip, not a format to guess at. Padding it
-        # with 'normal' silently solves a board that does not exist: dropping one
-        # cell from row 3 of the real board shifted the yellow door a column left and
-        # produced a 63-step route that walks through a wall. Refusing is cheaper
-        # than a desynchronised path.
-        if game_map:
-            widths = sorted({len(row) for row in game_map})
-            if len(widths) > 1:
-                return _err(400,
-                            "Ragged map: rows have widths %s. Every row must have the "
-                            "same number of cells. Re-send the row that is short - do "
-                            "not pad it." % ", ".join(str(w) for w in widths))
-
         map_config = body.get('map_config', {})
         player_start = map_config.get('playerStart') or body.get('playerStart') or {}
         if isinstance(player_start, str):
             start_pos = _parse_start(player_start)
         elif isinstance(player_start, dict) and player_start:
-            start_pos = (player_start.get('row', 0), player_start.get('col', 0))
+            start_pos = _parse_start(player_start)
         else:
             raw = body.get('start_pos') or body.get('start') or body.get('position') or [0, 0]
             start_pos = _parse_start(raw)
@@ -610,8 +607,7 @@ def lambda_handler(event, context=None):
             strategy = 'swift'
 
         if not game_map:
-            # Say why the cache did not help, so a failing run diagnoses itself.
-            return _err(400, 'Missing game_map. %s' % board_cache_status()[1])
+            return _err(400, 'Missing game_map or cache_id')
 
         rows, cols = len(game_map), len(game_map[0])
 
@@ -688,6 +684,10 @@ def lambda_handler(event, context=None):
                   'treasure_reached': treasure_reached,
                   'door_hints': door_hints, 'door_codes': door_codes,
                   'door_instructions': door_instructions}
+        # The caller needs the ID only after a full-map registration. Cache-hit
+        # responses omit it to keep the scored tool output at its minimum.
+        if cache_status == 'registered':
+            result['cache_id'] = cache_id
         return {'statusCode': 200, 'body': json.dumps(result, separators=(',', ':'))}
 
     except Exception as e:
@@ -702,8 +702,8 @@ if __name__ == "__main__":
     # Local test. Reads one event, or a list of them, from a file argument or stdin.
     # Needs no AWS credentials and no network:
     #
-    #   echo '{"start":"A5","first_row":"c42,c18,normal"}' | python pathfinding_lambda.py
-    #   python pathfinding_lambda.py event.json
+    #   echo '{"game_map":[["normal","treasure"]],"start":"A1"}' | python lambda.py
+    #   echo '{"game_map":[["b1-<32 hex>","<top cells>"],["b1-<32 hex>","<bottom cells>"]],"start":"A1"}' | python lambda.py
     #
     # Prints a summary rather than the whole body, because the three fields that
     # decide whether a route is safe are steps, issues and treasure_reached.

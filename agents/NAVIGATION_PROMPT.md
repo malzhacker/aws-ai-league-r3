@@ -8,11 +8,21 @@ deployed before writing anything in this box.
 ### `pathfinding/lambda_original.py` — the deployed one — needs one word
 
 It hardcodes the taxonomy: `DAMAGE_CELLS` is `{c8, trap}`, keys and doors are fixed, and
-the strategy defaults to `collect_all`. It needs **nothing** from this box. Verified on
-the live board with and without a `strategy` field in the payload: 69 steps, zero
-spikes, ending on the treasure either way.
+the strategy defaults to `collect_all`. It contains **no board**. A full runtime map
+registers under a content-derived cache ID. Later calls to the same warm execution
+environment send that ID plus exact top/bottom fingerprint rows through the existing
+map field. A cold, evicted, or boundary-mismatched entry asks for the full map again
+instead of routing on fallback data.
 
-So the entire Navigation Prompt is:
+This is an opportunistic optimization: Lambda process caches are not shared or durable,
+so a miss costs one compact call before the full-map retry. The two-row envelope and
+HTTP-200 retry body must be smoke-tested through the deployed AgentCore Gateway; local
+Lambda tests cannot prove Gateway validation. Boundary rows prevent reuse when either
+edge changes, but cannot detect a board change confined entirely to middle rows. Reuse
+only where the competition keeps the board stable across runs; otherwise send the full
+map once for that run.
+
+The strategy still needs nothing beyond one word. So the entire Navigation Prompt is:
 
 ```text
 collect_all
