@@ -78,6 +78,32 @@ The reward function is the exception: its handler is
 `lambda_function.lambda_handler`, and the whole file must be pasted including
 `lambda_handler` itself.
 
+## The reward function contract, as documented
+
+Confirmed against [Implementing reward functions](https://docs.aws.amazon.com/nova/latest/nova2-userguide/nova-implementing-reward-functions.html)
+in the Amazon Nova user guide. Content below is paraphrased from that page for
+licensing compliance.
+
+`body` is a **JSON string**, not a list. The working example on that page returns
+`{"statusCode": 200, "body": json.dumps(results)}`, which is what this repo does.
+The evaluator console displays `body` as a nested array because it parses the
+string for display, not because the service wants the parsed form.
+
+The container transforms each dataset row before calling the Lambda: it generates a
+model response, appends it as the `assistant` turn, and **injects its own `id`**.
+The output `id` must match that input `id`. `my_key` is only the dataset's own key,
+so the platform `id` takes precedence and `my_key` is the fallback for local and
+console testing where no `id` exists. Getting this backwards silently misattributes
+every sample during training.
+
+The event arrives as a bare list of samples, or as a single sample object.
+`metrics_list` is optional, and each entry's `type` is either `Reward` or `Metric`.
+
+Operational limits from the same page: 15 minutes maximum per invocation, and the
+function must tolerate `rollout_worker_replicas * 64` concurrent requests, so it
+stays pure string and regex work with no network calls. Failed rows return 0.0
+rather than raising, which is why one malformed row cannot abort a batch.
+
 ## A note on copying these files
 
 Prefer `git clone` over copy and paste. Two literal sequences have each corrupted a

@@ -74,6 +74,13 @@ guards both: a triple backtick closed the surrounding markdown fence mid-file, a
 string literal`. Special characters are built with `chr()` for this reason. Prefer
 git over pasting for anything long.
 
+Contract confirmed against the Nova user guide page "Implementing reward functions":
+`body` is a **JSON string** via `json.dumps(results)`, not a list. The console shows
+it parsed only because it parses for display. The container injects its own `id` and
+the returned `id` must match it, so the platform `id` outranks `my_key`; `my_key` is
+the fallback for local and console testing only. The event arrives as a bare list or
+a single sample object.
+
 Two scoring invariants were each broken once and must not regress:
 
 - Style and brevity are multiplied by correctness, never added, so a well-formed

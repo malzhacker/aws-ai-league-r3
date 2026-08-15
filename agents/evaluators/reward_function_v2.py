@@ -591,7 +591,10 @@ def reward_function(sample: Dict[str, Any], index: int) -> Dict[str, Any]:
     ]
 
     return {
-        "id": str(sample.get("my_key") or sample.get("id") or "sample-%03d" % index),
+        # The training container injects its own id and the contract requires the
+        # output id to match it, so the platform id always wins. my_key is the
+        # dataset's own key and is only a fallback for local and console testing.
+        "id": str(sample.get("id") or sample.get("my_key") or "sample-%03d" % index),
         "aggregate_reward_score": float(round(aggregate, 6)),
         "metrics_list": metrics,
         "verdict": detail,

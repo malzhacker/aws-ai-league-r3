@@ -300,6 +300,25 @@ check("leading answer beats trailing answer",
       > score(NUM, "Using fast doubling, the result is 2521294125")["aggregate_reward_score"])
 
 
+print("\n14b. the returned id must echo the platform id")
+# The RFT container appends the assistant turn and injects its own id, and the
+# documented contract says the output id must match the input. my_key is only the
+# dataset's key, so it must never win over an id the platform supplied.
+BOTH = {"id": "123", "my_key": "answerer-001",
+        "messages": [{"role": "user", "content": "q"},
+                     {"role": "assistant", "content": "Paris"}],
+        "reference_answer": SHORT}
+check("platform id wins over my_key", reward_function(BOTH, 0)["id"] == "123",
+      reward_function(BOTH, 0)["id"])
+check("my_key is used when no id is present",
+      reward_function({k: v for k, v in BOTH.items() if k != "id"}, 0)["id"]
+      == "answerer-001")
+check("index is the last resort",
+      reward_function({"messages": [], "reference_answer": SHORT}, 5)["id"] == "sample-005")
+check("id survives the batch path",
+      json.loads(lambda_handler({"batch": [BOTH]}, None)["body"])[0]["id"] == "123")
+
+
 print("\n15. source hygiene: the file must survive a copy through a console editor")
 # Two literal sequences have each corrupted this file in transit once:
 #   a triple backtick closed the surrounding markdown fence mid-file;
