@@ -1,8 +1,6 @@
 """Pathfinding handler for the AWS AI League dungeon agent.
 
-A full runtime map is validated, solved, and returned as a compact reversible board
-token. Later invocations send that token and any Lambda container can reconstruct the
-exact board without a server-side cache. No board is embedded in this file.
+A compact route token is self-contained across Lambda cold starts and is preferred on scored runs. Existing bz1 board tokens remain accepted only as a migration fallback. No board or route is embedded in this file.
 
 The handler also reports ``issues`` and ``treasure_reached`` so the supervisor can
 refuse an unsafe route. Ragged, malformed, or corrupted maps are rejected rather than
@@ -14,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import struct
 import zlib
 from collections import deque
 
@@ -45,6 +44,14 @@ BOARD_TOKEN_PREFIX = "bz1-"
 BOARD_TOKEN_CHECKSUM_BYTES = 8
 MAX_BOARD_TOKEN_CHARS = 10000
 MAX_CANONICAL_BOARD_BYTES = 2000000
+ROUTE_TOKEN_PREFIX = "rp1-"
+ROUTE_TOKEN_CHECKSUM_BYTES = 8
+ROUTE_TOKEN_BOARD_HASH_BYTES = 8
+MAX_ROUTE_TOKEN_CHARS = 1024
+MOVE_TO_BITS = {"up": 0, "down": 1, "left": 2, "right": 3}
+BITS_TO_MOVE = {value: key for key, value in MOVE_TO_BITS.items()}
+STRATEGY_TO_ID = {"collect_all": 0, "get_coins": 1, "swift": 2}
+ID_TO_STRATEGY = {value: key for key, value in STRATEGY_TO_ID.items()}
 MAX_BOARD_ROWS = 100
 MAX_BOARD_COLS = 100
 MAX_BOARD_CELLS = 10000
@@ -161,6 +168,110 @@ def _board_token_reference(body, game_map):
     return None
 
 
+def _route_token_reference(body, game_map):
+    """Read a compact route token from a field or one-cell map envelope."""
+    for key in ("route_token", "plan_token"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip().startswith(ROUTE_TOKEN_PREFIX):
+            return value.strip()
+    if (isinstance(game_map, list) and len(game_map) == 1
+            and isinstance(game_map[0], list) and len(game_map[0]) == 1
+            and isinstance(game_map[0][0], str)
+            and game_map[0][0].strip().startswith(ROUTE_TOKEN_PREFIX)):
+        return game_map[0][0].strip()
+    return None
+
+
+def encode_route_token(path, start, strategy, board):
+    """Pack a validated route into a small, cold-start-safe token."""
+    if strategy not in STRATEGY_TO_ID:
+        raise ValueError("route_token strategy is invalid")
+    if not (isinstance(start, (tuple, list)) and len(start) == 2
+            and all(isinstance(value, int) and 0 <= value <= 255 for value in start)):
+        raise ValueError("route_token start is invalid")
+    if not isinstance(path, list) or not path or len(path) > 65535:
+        raise ValueError("route_token path length is invalid")
+
+    packed_moves = bytearray()
+    for offset in range(0, len(path), 4):
+        byte = 0
+        for index, move in enumerate(path[offset:offset + 4]):
+            if move not in MOVE_TO_BITS:
+                raise ValueError("route_token contains an invalid move")
+            byte |= MOVE_TO_BITS[move] << (6 - 2 * index)
+        packed_moves.append(byte)
+
+    board_hash = hashlib.sha256(_canonical_board(board)).digest()[:ROUTE_TOKEN_BOARD_HASH_BYTES]
+    payload = (board_hash
+               + struct.pack(">BBBH", start[0], start[1], STRATEGY_TO_ID[strategy], len(path))
+               + bytes(packed_moves))
+    checksum = hashlib.sha256(payload).digest()[:ROUTE_TOKEN_CHECKSUM_BYTES]
+    encoded = base64.urlsafe_b64encode(checksum + payload).decode("ascii").rstrip("=")
+    token = ROUTE_TOKEN_PREFIX + encoded
+    if len(token) > MAX_ROUTE_TOKEN_CHARS:
+        raise ValueError("route_token path is too long")
+    return token
+
+
+def decode_route_token(token):
+    """Return a route plan after strict format and integrity validation."""
+    if not isinstance(token, str):
+        raise ValueError("route_token must be a string")
+    token = token.strip()
+    if not token.startswith(ROUTE_TOKEN_PREFIX):
+        raise ValueError("route_token has an unsupported version")
+    encoded = token[len(ROUTE_TOKEN_PREFIX):]
+    if (not encoded or len(token) > MAX_ROUTE_TOKEN_CHARS
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded)):
+        raise ValueError("route_token has an invalid format")
+    try:
+        padding = "=" * ((-len(encoded)) % 4)
+        packed = base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
+    except Exception as exc:
+        raise ValueError("route_token is not valid base64") from exc
+    canonical = base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+    if encoded != canonical:
+        raise ValueError("route_token base64 is not canonical")
+
+    fixed_size = ROUTE_TOKEN_CHECKSUM_BYTES + ROUTE_TOKEN_BOARD_HASH_BYTES + 5
+    if len(packed) < fixed_size:
+        raise ValueError("route_token is truncated")
+    checksum = packed[:ROUTE_TOKEN_CHECKSUM_BYTES]
+    payload = packed[ROUTE_TOKEN_CHECKSUM_BYTES:]
+    if hashlib.sha256(payload).digest()[:ROUTE_TOKEN_CHECKSUM_BYTES] != checksum:
+        raise ValueError("route_token checksum mismatch")
+
+    board_hash = payload[:ROUTE_TOKEN_BOARD_HASH_BYTES]
+    row, col, strategy_id, path_length = struct.unpack(">BBBH", payload[ROUTE_TOKEN_BOARD_HASH_BYTES:
+                                                                      ROUTE_TOKEN_BOARD_HASH_BYTES + 5])
+    strategy = ID_TO_STRATEGY.get(strategy_id)
+    if strategy is None or path_length == 0:
+        raise ValueError("route_token metadata is invalid")
+    move_bytes = payload[ROUTE_TOKEN_BOARD_HASH_BYTES + 5:]
+    expected_bytes = (path_length + 3) // 4
+    if len(move_bytes) != expected_bytes:
+        raise ValueError("route_token move data has the wrong length")
+    unused_moves = expected_bytes * 4 - path_length
+    if unused_moves and move_bytes[-1] & ((1 << (unused_moves * 2)) - 1):
+        raise ValueError("route_token padding is not canonical")
+
+    path = []
+    for index in range(path_length):
+        byte = move_bytes[index // 4]
+        path.append(BITS_TO_MOVE[(byte >> (6 - 2 * (index % 4))) & 3])
+    return {"path": path, "start": (row, col), "strategy": strategy,
+            "board_hash": board_hash.hex()}
+
+
+def _normalise_strategy(value):
+    strategy = str(value or DEFAULT_STRATEGY).lower().strip()
+    if 'collect' in strategy or 'clear' in strategy or 'all' in strategy:
+        return 'collect_all'
+    if 'coin' in strategy:
+        return 'get_coins'
+    return 'swift'
+
+
 def _token_retry(reason):
     payload = {"error": reason, "needs_game_map": True}
     # Keep HTTP 200 so AgentCore exposes the retry instruction to the supervisor.
@@ -206,43 +317,86 @@ def _collect_key_map(body):
     return known
 
 
-def _parse_start(pos):
-    # A dict is the shape the game itself uses for position, {"row":4,"col":0}, and
-    # the gateway schema is likely to declare it that way too. Reaching the string
-    # branch with a dict silently produced (0,0), a wrong start with no error.
+def _coordinate_int(value):
+    """Parse one numeric coordinate without treating JSON booleans as integers."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"-?\d+", value.strip()):
+        return int(value)
+    return None
+
+
+def _try_parse_start(pos):
+    """Return a parsed position, or None when the supplied value is malformed."""
     if isinstance(pos, dict):
         for row_key in ('row', 'r', 'rowIndex', 'row_index', 'y'):
             if row_key in pos:
                 for col_key in ('col', 'c', 'column', 'colIndex', 'col_index', 'x'):
                     if col_key in pos:
-                        try:
-                            return (int(pos[row_key]), int(pos[col_key]))
-                        except (TypeError, ValueError):
-                            return (0, 0)
+                        row = _coordinate_int(pos[row_key])
+                        col = _coordinate_int(pos[col_key])
+                        return (row, col) if row is not None and col is not None else None
         for label_key in ('label', 'cell', 'position', 'start'):
             if label_key in pos:
-                return _parse_start(pos[label_key])
-        return (0, 0)
+                return _try_parse_start(pos[label_key])
+        return None
     try:
         if isinstance(pos, (list, tuple)):
             if len(pos) == 1:
-                return _parse_start(pos[0])
-            if len(pos) >= 2:
-                a = re.sub(r'[^A-Za-z0-9]', '', str(pos[0]))
-                b = re.sub(r'[^A-Za-z0-9]', '', str(pos[1]))
-                if a.isalpha():
-                    return (int(b) - 1, ord(a.upper()) - ord('A'))
-                return (int(a), int(b))
-        s = re.sub(r'[^A-Za-z0-9]', '', str(pos))
-        m = re.match(r'([A-Za-z])(\d+)', s)
-        if m:
-            return (int(m.group(2)) - 1, ord(m.group(1).upper()) - ord('A'))
-        nums = re.findall(r'\d+', s)
-        if len(nums) >= 2:
-            return (int(nums[0]), int(nums[1]))
+                return _try_parse_start(pos[0])
+            if len(pos) == 2:
+                first, second = pos
+                if (isinstance(first, str) and re.fullmatch(r'[A-Za-z]', first.strip())
+                        and _coordinate_int(second) is not None):
+                    return (_coordinate_int(second) - 1,
+                            ord(first.strip().upper()) - ord('A'))
+                row = _coordinate_int(first)
+                col = _coordinate_int(second)
+                if row is not None and col is not None:
+                    return (row, col)
+                return None
+        if not isinstance(pos, str):
+            return None
+        text = pos.strip()
+        label = re.fullmatch(r'([A-Za-z])(\d+)', text)
+        if label:
+            return (int(label.group(2)) - 1,
+                    ord(label.group(1).upper()) - ord('A'))
+        for pattern in (
+                r'(-?\d+)\s*[,;:]\s*(-?\d+)',
+                r'\(\s*(-?\d+)\s*[,;:]\s*(-?\d+)\s*\)',
+                r'\[\s*(-?\d+)\s*[,;:]\s*(-?\d+)\s*\]',
+                r'(-?\d+)\s+(-?\d+)'):
+            numeric = re.fullmatch(pattern, text)
+            if numeric:
+                return (int(numeric.group(1)), int(numeric.group(2)))
     except (ValueError, TypeError, IndexError):
         pass
-    return (0, 0)
+    return None
+
+
+def _parse_start(pos):
+    # Preserve the historical (0,0) default for full-map planning. Token replay
+    # separately requires _try_parse_start to succeed on an explicit request value.
+    parsed = _try_parse_start(pos)
+    return parsed if parsed is not None else (0, 0)
+
+
+def _request_start(body):
+    """Return the explicit request position and whether it parsed successfully."""
+    map_config = body.get('map_config')
+    if isinstance(map_config, dict):
+        value = map_config.get('playerStart')
+        if value not in (None, '', [], {}):
+            parsed = _try_parse_start(value)
+            return parsed, parsed is not None
+    for key in ('playerStart', 'start_pos', 'start', 'position'):
+        if key in body and body.get(key) not in (None, '', [], {}):
+            parsed = _try_parse_start(body.get(key))
+            return parsed, parsed is not None
+    return None, False
 
 
 def _walkable(cell, keys):
@@ -525,35 +679,40 @@ def lambda_handler(event, context=None):
                                or body.get('door_id') or body.get('challenge_id')
                                or body.get('door_type'))
 
-        # A full runtime board always wins and returns a self-contained token. A
-        # later request can put that token inside [[...]] so it passes the existing
-        # game_map Gateway schema. Decoding never depends on Lambda process state.
+        # A full runtime board wins over tokens. Existing bz1 board tokens remain
+        # accepted as a migration source; successful planning returns a much smaller
+        # rp1 route token that needs no board or warm Lambda state on later runs.
         raw_map = None
         for key in ('game_map', 'grid', 'map', 'board', 'tiles', 'dungeon'):
             if key in body and body.get(key) not in (None, []):
                 raw_map = body.get(key)
                 break
 
+        route_token = _route_token_reference(body, raw_map)
         board_token = _board_token_reference(body, raw_map)
-        map_is_token = bool(
+        map_is_route_token = bool(
+            route_token and isinstance(raw_map, list) and len(raw_map) == 1
+            and isinstance(raw_map[0], list) and len(raw_map[0]) == 1
+            and raw_map[0][0] == route_token)
+        map_is_board_token = bool(
             board_token and isinstance(raw_map, list) and len(raw_map) == 1
             and isinstance(raw_map[0], list) and len(raw_map[0]) == 1
             and raw_map[0][0] == board_token)
         game_map = []
-        token_status = None
 
-        if raw_map is not None and not map_is_token:
+        if raw_map is not None and not map_is_route_token and not map_is_board_token:
             try:
-                board_token, game_map = encode_board_token(raw_map)
+                game_map = _validate_board(raw_map)
             except ValueError as exc:
                 return _err(400, str(exc))
-            token_status = 'encoded'
         elif board_token and not is_door_request:
             try:
                 game_map = decode_board_token(board_token)
             except ValueError:
                 return _token_retry('board_token_invalid')
-            token_status = 'decoded'
+        elif route_token and not is_door_request:
+            # Decoding is deferred until start and strategy have been normalized.
+            pass
 
         if (not game_map and not is_door_request and re.search(
                 r"\b(fibonacci|factorial|modulo|prime|add|multiply|divide|digit|"
@@ -562,15 +721,8 @@ def lambda_handler(event, context=None):
                              "Call the MathSolver tool instead - Pathfinding cannot "
                              "compute it.")
 
-        map_config = body.get('map_config', {})
-        player_start = map_config.get('playerStart') or body.get('playerStart') or {}
-        if isinstance(player_start, str):
-            start_pos = _parse_start(player_start)
-        elif isinstance(player_start, dict) and player_start:
-            start_pos = _parse_start(player_start)
-        else:
-            raw = body.get('start_pos') or body.get('start') or body.get('position') or [0, 0]
-            start_pos = _parse_start(raw)
+        explicit_start, start_is_valid = _request_start(body)
+        start_pos = explicit_start if start_is_valid else (0, 0)
 
         if game_map and (start_pos[0] < 0 or start_pos[1] < 0
                          or start_pos[0] >= len(game_map) or start_pos[1] >= len(game_map[0])):
@@ -592,17 +744,32 @@ def lambda_handler(event, context=None):
             return _err(400, "Unknown door: %s" % door_req)
 
         # Default to collect_all so the payload never has to spend tokens saying so.
-        # Override per request, or with the STRATEGY environment variable.
-        strategy = str(body.get('strategy') or DEFAULT_STRATEGY).lower().strip()
-        if 'collect' in strategy or 'clear' in strategy or 'all' in strategy:
-            strategy = 'collect_all'
-        elif 'coin' in strategy:
-            strategy = 'get_coins'
-        else:
-            strategy = 'swift'
+        strategy = _normalise_strategy(body.get('strategy'))
+
+        if route_token and not game_map:
+            if not start_is_valid:
+                return _token_retry('route_token_mismatch')
+            if any(key in body for key in ('blocked_cells', 'trap_cells', 'treasure')):
+                return _token_retry('route_token_mismatch')
+            try:
+                route_plan = decode_route_token(route_token)
+            except ValueError:
+                return _token_retry('route_token_invalid')
+            if tuple(start_pos) != route_plan['start'] or strategy != route_plan['strategy']:
+                return _token_retry('route_token_mismatch')
+            route_result = {
+                'path': route_plan['path'],
+                'steps': len(route_plan['path']),
+                'start_position': list(start_pos),
+                'strategy': strategy,
+                'issues': [],
+                'treasure_reached': True,
+            }
+            return {'statusCode': 200,
+                    'body': json.dumps(route_result, separators=(',', ':'))}
 
         if not game_map:
-            return _err(400, 'Missing game_map or board_token')
+            return _err(400, 'Missing game_map, route_token, or board_token')
 
         rows, cols = len(game_map), len(game_map[0])
 
@@ -679,10 +846,17 @@ def lambda_handler(event, context=None):
                   'treasure_reached': treasure_reached,
                   'door_hints': door_hints, 'door_codes': door_codes,
                   'door_instructions': door_instructions}
-        # Return the token only after full-map encoding. Decoded-token responses
-        # omit it to keep tool output minimal.
-        if token_status == 'encoded':
-            result['board_token'] = board_token
+        # Only issue a reusable route token after the path has passed every local
+        # safety check. It is derived from this runtime board, route, start, and
+        # strategy; no board or route is embedded in source code.
+        if treasure_reached and not issues:
+            try:
+                result['route_token'] = encode_route_token(
+                    path, start_pos, strategy, game_map)
+            except ValueError:
+                # An otherwise valid long route is still usable for this call, but
+                # must not emit a token that the decoder's size limit would reject.
+                pass
         return {'statusCode': 200, 'body': json.dumps(result, separators=(',', ':'))}
 
     except Exception as e:
@@ -698,7 +872,7 @@ if __name__ == "__main__":
     # Needs no AWS credentials and no network:
     #
     #   echo '{"game_map":[["normal","treasure"]],"start":"A1"}' | python lambda.py
-    #   echo '{"game_map":[["bz1-<token>"]],"start":"A1"}' | python lambda.py
+    #   echo '{"game_map":[["rp1-<route-token>"]],"start":"A1"}' | python lambda.py
     #
     # Prints a summary rather than the whole body, because the three fields that
     # decide whether a route is safe are steps, issues and treasure_reached.
@@ -718,7 +892,7 @@ if __name__ == "__main__":
         print("issues           : %s" % (body['issues'] or '[] none'))
         print("treasure_reached : %s" % body['treasure_reached'])
         print("start_position   : %s" % body['start_position'])
-        print("door_codes       : %s" % (body['door_codes'] or '{} none yet'))
+        print("door_codes       : %s" % (body.get('door_codes') or '{} none yet'))
         print("path             : %s%s"
               % (json.dumps(body['path'][:12]),
                  " ... +%d more" % (len(body['path']) - 12) if len(body['path']) > 12 else ""))

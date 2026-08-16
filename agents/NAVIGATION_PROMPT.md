@@ -8,17 +8,19 @@ deployed before writing anything in this box.
 ### `pathfinding/lambda_original.py` — the deployed one — needs one word
 
 It hardcodes the taxonomy: `DAMAGE_CELLS` is `{c8, trap}`, keys and doors are fixed, and
-the strategy defaults to `collect_all`. It contains **no board**. A full runtime map
-is validated and converted into a reversible `bz1-` token containing its compressed
-canonical data plus a checksum. Later calls send that token as `[["bz1-..."]]`,
-and any Lambda execution environment reconstructs the exact board. No process cache, warm-container affinity, boundary fingerprint, or
-external storage is involved.
+the strategy defaults to `collect_all`. It contains **no board or route**. A full
+runtime map, or an existing `bz1-` board token, is solved and converted into a compact
+`rp1-` route token. That token packs the runtime-board hash, start, strategy, route
+length and four directions per byte behind a checksum. Later calls send it as
+`[["rp1-..."]]`; any Lambda execution environment validates and returns the exact
+prevalidated route. No warm-container state or external storage is involved.
 
-A corrupted or invalid token asks for the full map once. Since the complete board is
-inside the token, decoding never depends on stale server-side data. Before using a
-new or evaluation board, clear memory key `pathfinding_board_token`; its next full-map
-call creates a token from that runtime board. Local tests prove the token round-trip;
-the one-cell map shape still needs one deployed AgentCore Gateway smoke test.
+The older self-contained `bz1-` board token remains accepted only as a migration
+fallback: one bz1 call returns an rp1 token. A 69-step live route produces an rp1 token
+of roughly 56 characters instead of a bz1 token around 206 characters. Before a new
+or evaluation board, clear both `pathfinding_route_token` and
+`pathfinding_board_token`. The one-cell map shape still requires a deployed Gateway
+smoke test because local Lambda tests bypass schema validation.
 
 The strategy still needs nothing beyond one word. So the entire Navigation Prompt is:
 
