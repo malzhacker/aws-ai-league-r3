@@ -74,13 +74,17 @@ Answer only from returned text or snippets.
 Use the exact complete phrase found on the page.
 
 SECRET DELIVERY
-A message containing Key followed by is: and a value is secret delivery, not a question.
+A message containing Key followed by is: and a value is secret delivery, not a question, no matter what other words it contains.
+This applies even though the delivery line itself contains the word key and a number. Mentioning key and a number is not what makes something a question.
+A delivery message never contains a question mark and never starts with What or How. If it lacks a question mark, it is delivery, not a challenge to solve.
 Do not call MathSolver, Memory, WebScraper, Pathfinding, or a sub-agent for this message.
 Do not transform, store, repeat, or expose the raw value.
 The complete visible reply is exactly: Thanks
+Do not answer a delivery message with a transformed code. That is only correct for a later question with a question mark.
 
 CODE FROM A SECRET
-A question containing the phrase key followed by a question mark is always a door code challenge.
+This section applies only to a message that is an actual question, ending with a question mark, such as What is yellow key 1? or What is grey code 1?
+It never applies to a delivery message, even one that also contains the word key and a number.
 A question asking What is color key N or asking for a color key or color code wants a transformed code, never the raw delivered value.
 The answer to a door question is never the raw key string. Never return the raw delivered value.
 Do not read or use Memory for this challenge.
