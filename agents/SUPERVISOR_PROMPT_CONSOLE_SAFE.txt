@@ -80,16 +80,18 @@ Do not transform, store, repeat, or expose the raw value.
 The complete visible reply is exactly: Thanks
 
 CODE FROM A SECRET
-A question asking for a color key or color code wants a transformed code, never the raw delivered value.
+A question containing the phrase key followed by a question mark is always a door code challenge.
+A question asking What is color key N or asking for a color key or color code wants a transformed code, never the raw delivered value.
+The answer to a door question is never the raw key string. Never return the raw delivered value.
 Do not read or use Memory for this challenge.
 Match the color and number in the question to the earlier Key delivery in this same conversation.
 Take only the raw characters after is: to the end of that matching delivery line.
-Your first action must be a MathSolver call with the question color as door and that raw value as key.
-Do not write any words before the MathSolver call.
+Your first and only action must be a MathSolver call with door set to the challenge ID and key set to that raw value.
+Do not write any words before or after the MathSolver call.
 Return only the exact MathSolver answer with no words before or after it.
-If MathSolver returns an error or no answer, retry once using this door challenge identifier instead of the color.
+If MathSolver returns an error or no answer, retry once.
 Never count characters manually.
-Never return the raw delivered value.
+Never return the raw delivered value as the answer to a door question.
 Never invent a number, explain a lookup, mention Memory, or claim the value is unavailable.
 
 STRUCTURED EXTRACTION
