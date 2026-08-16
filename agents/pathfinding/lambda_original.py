@@ -1,23 +1,19 @@
 """Pathfinding handler for the AWS AI League dungeon agent.
 
-The tile taxonomy is hardcoded, so hazards are avoided with no configuration: c8 and
-trap are never stepped on, and a door is impassable until its key is held.
+A compact route token is self-contained across Lambda cold starts and is preferred on scored runs. Existing bz1 board tokens remain accepted only as a migration fallback. No board or route is embedded in this file.
 
-Two things it does that the score depends on:
-
-  * The board can be cached in the BOARD environment variable, so the supervisor
-    sends two fingerprint rows instead of five hundred tokens of map. Relaying the
-    board is the single largest output cost in a run.
-  * It reports "issues" and "treasure_reached", which the supervisor prompt gates on
-    before submitting a route.
-
-A ragged row is refused rather than padded. Padding one silently solves a board that
-does not exist, which is far more expensive than a clear error.
+The handler also reports ``issues`` and ``treasure_reached`` so the supervisor can
+refuse an unsafe route. Ragged, malformed, or corrupted maps are rejected rather than
+repaired or guessed.
 """
 
+import base64
+import hashlib
 import json
 import os
 import re
+import struct
+import zlib
 from collections import deque
 
 CELL_POINTS = {"c7": 250}
@@ -34,102 +30,253 @@ DOOR_HINTS = {
 }
 
 # --------------------------------------------------------------------------- #
-# Cached board.
+# Stateless board token.
 #
-# Relaying the board costs the supervisor about 515 output tokens, and output
-# tokens are the only cost term in the score. The board itself is stable across
-# runs; what varies between runs is the questions on each tile. So the board can
-# live here in configuration, where it costs nothing, and the supervisor sends only
-# the first row as a fingerprint.
-#
-# The fingerprint is what makes this safe. Copying one row is something the model
-# does reliably, unlike re-encoding a hundred cells, which failed outright. If the
-# row does not match the cached board, this refuses and asks for the full map
-# rather than routing on a board that is no longer true.
-#
-# Set BOARD to the board as a JSON array of arrays. Leave it unset and everything
-# behaves exactly as before.
+# The token contains the canonical runtime board compressed with zlib, plus a
+# content checksum. It is data derived from the request, not a board in source code.
+# Because reconstruction needs no process memory, cold starts and Lambda scale-out
+# cannot turn a compact call into an expensive cache-miss retry.
 # --------------------------------------------------------------------------- #
 
 NEWLINE = chr(10)
 DEFAULT_STRATEGY = os.environ.get("STRATEGY", "collect_all")
-
-# The board, in code rather than in configuration.
-#
-# The BOARD environment variable is the cleaner home for this, but a workshop role
-# is denied lambda:UpdateFunctionConfiguration, so environment variables cannot be
-# set at all. Code updates use a different permission, so the value lives here.
-#
-# The environment variable still wins when it is available, so nothing has to change
-# if this ever moves to an account that allows it.
-#
-# Replace this if the board changes. The fingerprint check below means a stale value
-# fails loudly with the row it disagreed on, rather than routing on a wrong board.
-BOARD_IN_CODE = [
-    ["c42", "c18", "normal", "normal", "c1", "normal", "c7", "normal", "normal", "treasure"],
-    ["c4", "normal", "normal", "c2", "wall", "normal", "normal", "normal", "normal", "normal"],
-    ["normal", "normal", "normal", "normal", "wall", "c43", "normal", "normal", "normal", "normal"],
-    ["wall", "wall", "wall", "c5", "wall", "wall", "c8", "wall", "wall", "c33"],
-    ["normal", "normal", "normal", "normal", "c8", "normal", "normal", "normal", "normal", "normal"],
-    ["wall", "wall", "wall", "c8", "wall", "wall", "wall", "wall", "wall", "c32"],
-    ["c8", "normal", "normal", "normal", "wall", "c7", "c7", "c7", "c7", "c1"],
-    ["c2", "normal", "normal", "c4", "wall", "c17", "c7", "c7", "c7", "c7"],
-    ["normal", "normal", "normal", "normal", "wall", "wall", "wall", "wall", "wall", "normal"],
-    ["c8", "normal", "normal", "c18", "c5", "c7", "c7", "c7", "c7", "c7"],
-]
+BOARD_TOKEN_PREFIX = "bz1-"
+BOARD_TOKEN_CHECKSUM_BYTES = 8
+MAX_BOARD_TOKEN_CHARS = 10000
+MAX_CANONICAL_BOARD_BYTES = 2000000
+ROUTE_TOKEN_PREFIX = "rp1-"
+ROUTE_TOKEN_CHECKSUM_BYTES = 8
+ROUTE_TOKEN_BOARD_HASH_BYTES = 8
+MAX_ROUTE_TOKEN_CHARS = 1024
+MOVE_TO_BITS = {"up": 0, "down": 1, "left": 2, "right": 3}
+BITS_TO_MOVE = {value: key for key, value in MOVE_TO_BITS.items()}
+STRATEGY_TO_ID = {"collect_all": 0, "get_coins": 1, "swift": 2}
+ID_TO_STRATEGY = {value: key for key, value in STRATEGY_TO_ID.items()}
+MAX_BOARD_ROWS = 100
+MAX_BOARD_COLS = 100
+MAX_BOARD_CELLS = 10000
+MAX_CELL_CHARS = 128
 
 
-def board_cache_status():
-    """Return (board, explanation). The explanation is surfaced in errors.
+def _validate_board(value):
+    """Return a defensive board copy or raise ValueError with a useful reason."""
+    if not isinstance(value, list) or not value:
+        raise ValueError("game_map must be a non-empty array of rows")
+    if len(value) > MAX_BOARD_ROWS:
+        raise ValueError("game_map has too many rows")
 
-    A malformed BOARD used to look identical to an unset one, which is unhelpful
-    when the caller cannot invoke this function directly to inspect it. Now the
-    reason travels back in the error message.
-    """
-    raw = os.environ.get("BOARD")
-    if not raw or not raw.strip():
-        # No variable, so use the value compiled into this file.
-        board = BOARD_IN_CODE
-        if not (isinstance(board, list) and board
-                and all(isinstance(row, list) and row for row in board)
-                and all(isinstance(cell, str) for row in board for cell in row)
-                and len({len(row) for row in board}) == 1):
-            return None, "BOARD is not set and BOARD_IN_CODE is empty or malformed"
-        return board, ("BOARD_IN_CODE loaded: %d rows of %d"
-                       % (len(board), len(board[0])))
+    board = []
+    width = None
+    for row_index, row in enumerate(value):
+        if not isinstance(row, list) or not row:
+            raise ValueError("game_map row %d must be a non-empty array" % row_index)
+        if width is None:
+            width = len(row)
+            if width > MAX_BOARD_COLS:
+                raise ValueError("game_map has too many columns")
+        elif len(row) != width:
+            raise ValueError(
+                "Ragged map: rows have widths %s. Every row must have the same "
+                "number of cells; re-send the short row without padding."
+                % ", ".join(str(v) for v in sorted({width, len(row)})))
+        clean_row = []
+        for col_index, cell in enumerate(row):
+            if not isinstance(cell, str):
+                raise ValueError(
+                    "game_map cell (%d,%d) must be a string" % (row_index, col_index))
+            if not cell or len(cell) > MAX_CELL_CHARS:
+                raise ValueError(
+                    "game_map cell (%d,%d) has an invalid length" % (row_index, col_index))
+            clean_row.append(cell)
+        board.append(clean_row)
+
+    if len(board) * width > MAX_BOARD_CELLS:
+        raise ValueError("game_map has too many cells")
+    return board
+
+
+def _canonical_board(board):
+    return json.dumps(board, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def encode_board_token(value):
+    """Validate a board and return (self-contained token, defensive board copy)."""
+    board = _validate_board(value)
+    canonical = _canonical_board(board)
+    if len(canonical) > MAX_CANONICAL_BOARD_BYTES:
+        raise ValueError("game_map encoding is too large")
+    checksum = hashlib.sha256(canonical).digest()[:BOARD_TOKEN_CHECKSUM_BYTES]
+    packed = checksum + zlib.compress(canonical, 9)
+    encoded = base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+    return BOARD_TOKEN_PREFIX + encoded, board
+
+
+def decode_board_token(token):
+    """Reconstruct and validate a board without relying on Lambda process state."""
+    if not isinstance(token, str):
+        raise ValueError("board_token must be a string")
+    token = token.strip()
+    if not token.startswith(BOARD_TOKEN_PREFIX):
+        raise ValueError("board_token has an unsupported version")
+    encoded = token[len(BOARD_TOKEN_PREFIX):]
+    if (not encoded or len(token) > MAX_BOARD_TOKEN_CHARS
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded)):
+        raise ValueError("board_token has an invalid format")
+
     try:
-        board = json.loads(raw)
-    except ValueError as exc:
-        return None, ("BOARD is set (%d characters) but is not valid JSON: %s. It must "
-                      "be one line, an array of arrays of quoted tile names."
-                      % (len(raw), exc))
-    if not (isinstance(board, list) and board
-            and all(isinstance(row, list) and row for row in board)):
-        return None, "BOARD parsed but is not a non-empty array of non-empty arrays"
-    if not all(isinstance(cell, str) for row in board for cell in row):
-        return None, "BOARD contains a non-string cell; every tile name must be quoted"
-    widths = sorted({len(row) for row in board})
-    if len(widths) > 1:
-        return None, ("BOARD is ragged: row widths are %s. Every row must have the same "
-                      "number of cells." % ", ".join(str(w) for w in widths))
-    return board, "BOARD loaded: %d rows of %d" % (len(board), widths[0])
+        padding = "=" * ((-len(encoded)) % 4)
+        packed = base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
+    except Exception as exc:
+        raise ValueError("board_token is not valid base64") from exc
+    if len(packed) <= BOARD_TOKEN_CHECKSUM_BYTES:
+        raise ValueError("board_token is truncated")
+
+    checksum = packed[:BOARD_TOKEN_CHECKSUM_BYTES]
+    compressed = packed[BOARD_TOKEN_CHECKSUM_BYTES:]
+    try:
+        decompressor = zlib.decompressobj()
+        canonical = decompressor.decompress(compressed, MAX_CANONICAL_BOARD_BYTES + 1)
+        if (len(canonical) > MAX_CANONICAL_BOARD_BYTES or decompressor.unconsumed_tail
+                or not decompressor.eof or decompressor.unused_data):
+            raise ValueError("board_token expands beyond its allowed size")
+    except zlib.error as exc:
+        raise ValueError("board_token has invalid compressed data") from exc
+
+    if hashlib.sha256(canonical).digest()[:BOARD_TOKEN_CHECKSUM_BYTES] != checksum:
+        raise ValueError("board_token checksum mismatch")
+    try:
+        parsed = json.loads(canonical.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("board_token does not contain valid board JSON") from exc
+    board = _validate_board(parsed)
+    if _canonical_board(board) != canonical:
+        raise ValueError("board_token board encoding is not canonical")
+    return board
 
 
-def load_cached_board():
-    return board_cache_status()[0]
-
-
-def fingerprint_row(body):
-    """The row the caller sent for verification, in any reasonable spelling."""
-    for key in ('first_row', 'firstrow', 'row0', 'row_0', 'fingerprint', 'verify_row'):
+def _board_token_reference(body, game_map):
+    """Read a token from an optional field or the existing one-cell map field."""
+    for key in ("board_token", "cache_id", "board_id"):
         value = body.get(key)
-        if isinstance(value, list) and value and all(isinstance(c, str) for c in value):
-            return value
-        if isinstance(value, str) and value.strip():
-            parts = [p.strip().strip('"\'') for p in value.split(',')]
-            if len(parts) > 1:
-                return parts
+        if isinstance(value, str) and value.strip().startswith(BOARD_TOKEN_PREFIX):
+            return value.strip()
+    if (isinstance(game_map, list) and len(game_map) == 1
+            and isinstance(game_map[0], list) and len(game_map[0]) == 1
+            and isinstance(game_map[0][0], str)
+            and game_map[0][0].strip().startswith(BOARD_TOKEN_PREFIX)):
+        return game_map[0][0].strip()
     return None
+
+
+def _route_token_reference(body, game_map):
+    """Read a compact route token from a field or one-cell map envelope."""
+    for key in ("route_token", "plan_token"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip().startswith(ROUTE_TOKEN_PREFIX):
+            return value.strip()
+    if (isinstance(game_map, list) and len(game_map) == 1
+            and isinstance(game_map[0], list) and len(game_map[0]) == 1
+            and isinstance(game_map[0][0], str)
+            and game_map[0][0].strip().startswith(ROUTE_TOKEN_PREFIX)):
+        return game_map[0][0].strip()
+    return None
+
+
+def encode_route_token(path, start, strategy, board):
+    """Pack a validated route into a small, cold-start-safe token."""
+    if strategy not in STRATEGY_TO_ID:
+        raise ValueError("route_token strategy is invalid")
+    if not (isinstance(start, (tuple, list)) and len(start) == 2
+            and all(isinstance(value, int) and 0 <= value <= 255 for value in start)):
+        raise ValueError("route_token start is invalid")
+    if not isinstance(path, list) or not path or len(path) > 65535:
+        raise ValueError("route_token path length is invalid")
+
+    packed_moves = bytearray()
+    for offset in range(0, len(path), 4):
+        byte = 0
+        for index, move in enumerate(path[offset:offset + 4]):
+            if move not in MOVE_TO_BITS:
+                raise ValueError("route_token contains an invalid move")
+            byte |= MOVE_TO_BITS[move] << (6 - 2 * index)
+        packed_moves.append(byte)
+
+    board_hash = hashlib.sha256(_canonical_board(board)).digest()[:ROUTE_TOKEN_BOARD_HASH_BYTES]
+    payload = (board_hash
+               + struct.pack(">BBBH", start[0], start[1], STRATEGY_TO_ID[strategy], len(path))
+               + bytes(packed_moves))
+    checksum = hashlib.sha256(payload).digest()[:ROUTE_TOKEN_CHECKSUM_BYTES]
+    encoded = base64.urlsafe_b64encode(checksum + payload).decode("ascii").rstrip("=")
+    token = ROUTE_TOKEN_PREFIX + encoded
+    if len(token) > MAX_ROUTE_TOKEN_CHARS:
+        raise ValueError("route_token path is too long")
+    return token
+
+
+def decode_route_token(token):
+    """Return a route plan after strict format and integrity validation."""
+    if not isinstance(token, str):
+        raise ValueError("route_token must be a string")
+    token = token.strip()
+    if not token.startswith(ROUTE_TOKEN_PREFIX):
+        raise ValueError("route_token has an unsupported version")
+    encoded = token[len(ROUTE_TOKEN_PREFIX):]
+    if (not encoded or len(token) > MAX_ROUTE_TOKEN_CHARS
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded)):
+        raise ValueError("route_token has an invalid format")
+    try:
+        padding = "=" * ((-len(encoded)) % 4)
+        packed = base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
+    except Exception as exc:
+        raise ValueError("route_token is not valid base64") from exc
+    canonical = base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+    if encoded != canonical:
+        raise ValueError("route_token base64 is not canonical")
+
+    fixed_size = ROUTE_TOKEN_CHECKSUM_BYTES + ROUTE_TOKEN_BOARD_HASH_BYTES + 5
+    if len(packed) < fixed_size:
+        raise ValueError("route_token is truncated")
+    checksum = packed[:ROUTE_TOKEN_CHECKSUM_BYTES]
+    payload = packed[ROUTE_TOKEN_CHECKSUM_BYTES:]
+    if hashlib.sha256(payload).digest()[:ROUTE_TOKEN_CHECKSUM_BYTES] != checksum:
+        raise ValueError("route_token checksum mismatch")
+
+    board_hash = payload[:ROUTE_TOKEN_BOARD_HASH_BYTES]
+    row, col, strategy_id, path_length = struct.unpack(">BBBH", payload[ROUTE_TOKEN_BOARD_HASH_BYTES:
+                                                                      ROUTE_TOKEN_BOARD_HASH_BYTES + 5])
+    strategy = ID_TO_STRATEGY.get(strategy_id)
+    if strategy is None or path_length == 0:
+        raise ValueError("route_token metadata is invalid")
+    move_bytes = payload[ROUTE_TOKEN_BOARD_HASH_BYTES + 5:]
+    expected_bytes = (path_length + 3) // 4
+    if len(move_bytes) != expected_bytes:
+        raise ValueError("route_token move data has the wrong length")
+    unused_moves = expected_bytes * 4 - path_length
+    if unused_moves and move_bytes[-1] & ((1 << (unused_moves * 2)) - 1):
+        raise ValueError("route_token padding is not canonical")
+
+    path = []
+    for index in range(path_length):
+        byte = move_bytes[index // 4]
+        path.append(BITS_TO_MOVE[(byte >> (6 - 2 * (index % 4))) & 3])
+    return {"path": path, "start": (row, col), "strategy": strategy,
+            "board_hash": board_hash.hex()}
+
+
+def _normalise_strategy(value):
+    strategy = str(value or DEFAULT_STRATEGY).lower().strip()
+    if 'collect' in strategy or 'clear' in strategy or 'all' in strategy:
+        return 'collect_all'
+    if 'coin' in strategy:
+        return 'get_coins'
+    return 'swift'
+
+
+def _token_retry(reason):
+    payload = {"error": reason, "needs_game_map": True}
+    # Keep HTTP 200 so AgentCore exposes the retry instruction to the supervisor.
+    return {"statusCode": 200,
+            "body": json.dumps(payload, separators=(",", ":"))}
 
 
 def door_unlock_code(challenge_id, key):
@@ -170,43 +317,86 @@ def _collect_key_map(body):
     return known
 
 
-def _parse_start(pos):
-    # A dict is the shape the game itself uses for position, {"row":4,"col":0}, and
-    # the gateway schema is likely to declare it that way too. Reaching the string
-    # branch with a dict silently produced (0,0), a wrong start with no error.
+def _coordinate_int(value):
+    """Parse one numeric coordinate without treating JSON booleans as integers."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"-?\d+", value.strip()):
+        return int(value)
+    return None
+
+
+def _try_parse_start(pos):
+    """Return a parsed position, or None when the supplied value is malformed."""
     if isinstance(pos, dict):
         for row_key in ('row', 'r', 'rowIndex', 'row_index', 'y'):
             if row_key in pos:
                 for col_key in ('col', 'c', 'column', 'colIndex', 'col_index', 'x'):
                     if col_key in pos:
-                        try:
-                            return (int(pos[row_key]), int(pos[col_key]))
-                        except (TypeError, ValueError):
-                            return (0, 0)
+                        row = _coordinate_int(pos[row_key])
+                        col = _coordinate_int(pos[col_key])
+                        return (row, col) if row is not None and col is not None else None
         for label_key in ('label', 'cell', 'position', 'start'):
             if label_key in pos:
-                return _parse_start(pos[label_key])
-        return (0, 0)
+                return _try_parse_start(pos[label_key])
+        return None
     try:
         if isinstance(pos, (list, tuple)):
             if len(pos) == 1:
-                return _parse_start(pos[0])
-            if len(pos) >= 2:
-                a = re.sub(r'[^A-Za-z0-9]', '', str(pos[0]))
-                b = re.sub(r'[^A-Za-z0-9]', '', str(pos[1]))
-                if a.isalpha():
-                    return (int(b) - 1, ord(a.upper()) - ord('A'))
-                return (int(a), int(b))
-        s = re.sub(r'[^A-Za-z0-9]', '', str(pos))
-        m = re.match(r'([A-Za-z])(\d+)', s)
-        if m:
-            return (int(m.group(2)) - 1, ord(m.group(1).upper()) - ord('A'))
-        nums = re.findall(r'\d+', s)
-        if len(nums) >= 2:
-            return (int(nums[0]), int(nums[1]))
+                return _try_parse_start(pos[0])
+            if len(pos) == 2:
+                first, second = pos
+                if (isinstance(first, str) and re.fullmatch(r'[A-Za-z]', first.strip())
+                        and _coordinate_int(second) is not None):
+                    return (_coordinate_int(second) - 1,
+                            ord(first.strip().upper()) - ord('A'))
+                row = _coordinate_int(first)
+                col = _coordinate_int(second)
+                if row is not None and col is not None:
+                    return (row, col)
+                return None
+        if not isinstance(pos, str):
+            return None
+        text = pos.strip()
+        label = re.fullmatch(r'([A-Za-z])(\d+)', text)
+        if label:
+            return (int(label.group(2)) - 1,
+                    ord(label.group(1).upper()) - ord('A'))
+        for pattern in (
+                r'(-?\d+)\s*[,;:]\s*(-?\d+)',
+                r'\(\s*(-?\d+)\s*[,;:]\s*(-?\d+)\s*\)',
+                r'\[\s*(-?\d+)\s*[,;:]\s*(-?\d+)\s*\]',
+                r'(-?\d+)\s+(-?\d+)'):
+            numeric = re.fullmatch(pattern, text)
+            if numeric:
+                return (int(numeric.group(1)), int(numeric.group(2)))
     except (ValueError, TypeError, IndexError):
         pass
-    return (0, 0)
+    return None
+
+
+def _parse_start(pos):
+    # Preserve the historical (0,0) default for full-map planning. Token replay
+    # separately requires _try_parse_start to succeed on an explicit request value.
+    parsed = _try_parse_start(pos)
+    return parsed if parsed is not None else (0, 0)
+
+
+def _request_start(body):
+    """Return the explicit request position and whether it parsed successfully."""
+    map_config = body.get('map_config')
+    if isinstance(map_config, dict):
+        value = map_config.get('playerStart')
+        if value not in (None, '', [], {}):
+            parsed = _try_parse_start(value)
+            return parsed, parsed is not None
+    for key in ('playerStart', 'start_pos', 'start', 'position'):
+        if key in body and body.get(key) not in (None, '', [], {}):
+            parsed = _try_parse_start(body.get(key))
+            return parsed, parsed is not None
+    return None, False
 
 
 def _walkable(cell, keys):
@@ -475,110 +665,64 @@ def collect_all_path(game_map, rows, cols, start, treasure, keys=None, blocked=N
 
 def lambda_handler(event, context=None):
     try:
+        if not isinstance(event, dict):
+            return _err(400, "Event must be a JSON object")
         if 'body' in event:
             body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
         else:
             body = event
+        if not isinstance(body, dict):
+            return _err(400, "Request body must be a JSON object")
 
-        # Accept the board under any of the usual names.
-        game_map = []
-        for key in ('game_map', 'grid', 'map', 'board', 'tiles', 'dungeon'):
-            value = body.get(key)
-            if isinstance(value, list) and value and all(isinstance(r, list) for r in value):
-                game_map = value
-                break
-
-        # A two-row game_map is a fingerprint, not a board.
-        #
-        # The gateway validates parameters against its declared schema, so a field it
-        # does not know is rejected before this function runs: sending first_row and
-        # last_row produced "correct the parameter types" and a retry with the whole
-        # map. game_map is certainly in the schema, so the two rows travel inside it.
-        # Ten rows cost about 515 output tokens; two rows cost about 123.
-        #
-        # Without this branch a two-row board is solved literally, which returned a
-        # 15-step route through nine walls and two spikes.
-        if game_map and len(game_map) in (1, 2):
-            cached, _note = board_cache_status()
-            if cached and len(cached) > 2:
-                top = list(game_map[0])
-                bottom = list(game_map[1]) if len(game_map) == 2 else list(cached[-1])
-                if top == list(cached[0]) and bottom == list(cached[-1]):
-                    game_map = cached
-                else:
-                    return _err(400,
-                                "Two rows were sent as a fingerprint but they do not match "
-                                "the cached board. Sent top %s and bottom %s; the cached "
-                                "board starts %s and ends %s. Send the whole board as "
-                                "game_map instead."
-                                % (json.dumps(top), json.dumps(bottom),
-                                   json.dumps(cached[0]), json.dumps(cached[-1])))
-
-        # A door-code request carries no board and needs none, so the cached-board
-        # fallback must not fire for it. Missing this guard made every door request
-        # fail the moment BOARD was configured.
+        # A door-code request carries no board and needs none.
         is_door_request = bool(body.get('door_code') or body.get('door')
                                or body.get('door_id') or body.get('challenge_id')
                                or body.get('door_type'))
 
-        # No board in the payload? Fall back to the cached one, but only after the
-        # caller's fingerprint row proves it is still the right board.
-        if not game_map and not is_door_request:
-            cached, cache_note = board_cache_status()
-            sent_row = fingerprint_row(body)
-            if cached and sent_row:
-                sent_last = fingerprint_row({'first_row': body.get('last_row')
-                                                          or body.get('lastrow')})
-                if list(sent_row) != list(cached[0]):
-                    return _err(400,
-                                "Cached board does not match. Row 0 sent was %s but the "
-                                "cached board starts %s. Send the whole board as game_map "
-                                "instead." % (json.dumps(sent_row), json.dumps(cached[0])))
-                if sent_last and list(sent_last) != list(cached[-1]):
-                    # Checking both ends costs the caller about 40 tokens and makes a
-                    # stale middle far less likely to slip through unnoticed.
-                    return _err(400,
-                                "Cached board does not match. Last row sent was %s but the "
-                                "cached board ends %s. Send the whole board as game_map "
-                                "instead." % (json.dumps(sent_last), json.dumps(cached[-1])))
-                game_map = cached
-            elif cached and not sent_row:
-                return _err(400,
-                            "A cached board is configured but no fingerprint row was sent. "
-                            "Send first_row as the board's top row, copied exactly, or send "
-                            "the whole board as game_map.")
+        # A full runtime board wins over tokens. Existing bz1 board tokens remain
+        # accepted as a migration source; successful planning returns a much smaller
+        # rp1 route token that needs no board or warm Lambda state on later runs.
+        raw_map = None
+        for key in ('game_map', 'grid', 'map', 'board', 'tiles', 'dungeon'):
+            if key in body and body.get(key) not in (None, []):
+                raw_map = body.get(key)
+                break
 
-        if (not game_map and not body.get('door_code') and not body.get('door')
-                and not body.get('door_id') and not body.get('challenge_id')
-                and re.search(
+        route_token = _route_token_reference(body, raw_map)
+        board_token = _board_token_reference(body, raw_map)
+        map_is_route_token = bool(
+            route_token and isinstance(raw_map, list) and len(raw_map) == 1
+            and isinstance(raw_map[0], list) and len(raw_map[0]) == 1
+            and raw_map[0][0] == route_token)
+        map_is_board_token = bool(
+            board_token and isinstance(raw_map, list) and len(raw_map) == 1
+            and isinstance(raw_map[0], list) and len(raw_map[0]) == 1
+            and raw_map[0][0] == board_token)
+        game_map = []
+
+        if raw_map is not None and not map_is_route_token and not map_is_board_token:
+            try:
+                game_map = _validate_board(raw_map)
+            except ValueError as exc:
+                return _err(400, str(exc))
+        elif board_token and not is_door_request:
+            try:
+                game_map = decode_board_token(board_token)
+            except ValueError:
+                return _token_retry('board_token_invalid')
+        elif route_token and not is_door_request:
+            # Decoding is deferred until start and strategy have been normalized.
+            pass
+
+        if (not game_map and not is_door_request and re.search(
                 r"\b(fibonacci|factorial|modulo|prime|add|multiply|divide|digit|"
                 r"calculate|compute|what\s+is|door|key)\b", str(body), re.I)):
             return _err(400, "This looks like a math, code, or door question. "
                              "Call the MathSolver tool instead - Pathfinding cannot "
                              "compute it.")
 
-        # A ragged row is a transcription slip, not a format to guess at. Padding it
-        # with 'normal' silently solves a board that does not exist: dropping one
-        # cell from row 3 of the real board shifted the yellow door a column left and
-        # produced a 63-step route that walks through a wall. Refusing is cheaper
-        # than a desynchronised path.
-        if game_map:
-            widths = sorted({len(row) for row in game_map})
-            if len(widths) > 1:
-                return _err(400,
-                            "Ragged map: rows have widths %s. Every row must have the "
-                            "same number of cells. Re-send the row that is short - do "
-                            "not pad it." % ", ".join(str(w) for w in widths))
-
-        map_config = body.get('map_config', {})
-        player_start = map_config.get('playerStart') or body.get('playerStart') or {}
-        if isinstance(player_start, str):
-            start_pos = _parse_start(player_start)
-        elif isinstance(player_start, dict) and player_start:
-            start_pos = (player_start.get('row', 0), player_start.get('col', 0))
-        else:
-            raw = body.get('start_pos') or body.get('start') or body.get('position') or [0, 0]
-            start_pos = _parse_start(raw)
+        explicit_start, start_is_valid = _request_start(body)
+        start_pos = explicit_start if start_is_valid else (0, 0)
 
         if game_map and (start_pos[0] < 0 or start_pos[1] < 0
                          or start_pos[0] >= len(game_map) or start_pos[1] >= len(game_map[0])):
@@ -600,18 +744,32 @@ def lambda_handler(event, context=None):
             return _err(400, "Unknown door: %s" % door_req)
 
         # Default to collect_all so the payload never has to spend tokens saying so.
-        # Override per request, or with the STRATEGY environment variable.
-        strategy = str(body.get('strategy') or DEFAULT_STRATEGY).lower().strip()
-        if 'collect' in strategy or 'clear' in strategy or 'all' in strategy:
-            strategy = 'collect_all'
-        elif 'coin' in strategy:
-            strategy = 'get_coins'
-        else:
-            strategy = 'swift'
+        strategy = _normalise_strategy(body.get('strategy'))
+
+        if route_token and not game_map:
+            if not start_is_valid:
+                return _token_retry('route_token_mismatch')
+            if any(key in body for key in ('blocked_cells', 'trap_cells', 'treasure')):
+                return _token_retry('route_token_mismatch')
+            try:
+                route_plan = decode_route_token(route_token)
+            except ValueError:
+                return _token_retry('route_token_invalid')
+            if tuple(start_pos) != route_plan['start'] or strategy != route_plan['strategy']:
+                return _token_retry('route_token_mismatch')
+            route_result = {
+                'path': route_plan['path'],
+                'steps': len(route_plan['path']),
+                'start_position': list(start_pos),
+                'strategy': strategy,
+                'issues': [],
+                'treasure_reached': True,
+            }
+            return {'statusCode': 200,
+                    'body': json.dumps(route_result, separators=(',', ':'))}
 
         if not game_map:
-            # Say why the cache did not help, so a failing run diagnoses itself.
-            return _err(400, 'Missing game_map. %s' % board_cache_status()[1])
+            return _err(400, 'Missing game_map, route_token, or board_token')
 
         rows, cols = len(game_map), len(game_map[0])
 
@@ -688,6 +846,17 @@ def lambda_handler(event, context=None):
                   'treasure_reached': treasure_reached,
                   'door_hints': door_hints, 'door_codes': door_codes,
                   'door_instructions': door_instructions}
+        # Only issue a reusable route token after the path has passed every local
+        # safety check. It is derived from this runtime board, route, start, and
+        # strategy; no board or route is embedded in source code.
+        if treasure_reached and not issues:
+            try:
+                result['route_token'] = encode_route_token(
+                    path, start_pos, strategy, game_map)
+            except ValueError:
+                # An otherwise valid long route is still usable for this call, but
+                # must not emit a token that the decoder's size limit would reject.
+                pass
         return {'statusCode': 200, 'body': json.dumps(result, separators=(',', ':'))}
 
     except Exception as e:
@@ -702,8 +871,8 @@ if __name__ == "__main__":
     # Local test. Reads one event, or a list of them, from a file argument or stdin.
     # Needs no AWS credentials and no network:
     #
-    #   echo '{"start":"A5","first_row":"c42,c18,normal"}' | python pathfinding_lambda.py
-    #   python pathfinding_lambda.py event.json
+    #   echo '{"game_map":[["normal","treasure"]],"start":"A1"}' | python lambda.py
+    #   echo '{"game_map":[["rp1-<route-token>"]],"start":"A1"}' | python lambda.py
     #
     # Prints a summary rather than the whole body, because the three fields that
     # decide whether a route is safe are steps, issues and treasure_reached.
@@ -723,7 +892,7 @@ if __name__ == "__main__":
         print("issues           : %s" % (body['issues'] or '[] none'))
         print("treasure_reached : %s" % body['treasure_reached'])
         print("start_position   : %s" % body['start_position'])
-        print("door_codes       : %s" % (body['door_codes'] or '{} none yet'))
+        print("door_codes       : %s" % (body.get('door_codes') or '{} none yet'))
         print("path             : %s%s"
               % (json.dumps(body['path'][:12]),
                  " ... +%d more" % (len(body['path']) - 12) if len(body['path']) > 12 else ""))
